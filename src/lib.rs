@@ -11,3 +11,25 @@ mod d64;
 
 pub use d64::D64;
 pub use d128::D128;
+
+use thiserror::Error;
+
+#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecimalError {
+    #[error("overflow: value too large to represent")]
+    Overflow,
+
+    #[error("underflow: value too small to represent")]
+    Underflow,
+
+    #[error("division by zero")]
+    DivisionByZero,
+
+    #[error("invalid string format")]
+    InvalidFormat,
+
+    #[error("precision loss would occur")]
+    PrecisionLoss,
+}
+
+pub type Result<T> = core::result::Result<T, DecimalError>;
