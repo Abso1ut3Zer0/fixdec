@@ -24,6 +24,7 @@
 //!
 //! ```rust
 //! use fixdec::{D64, D96};
+//! use std::str::FromStr;
 //!
 //! // D64 for traditional finance
 //! let price = D64::from_str("1234.56").unwrap();
