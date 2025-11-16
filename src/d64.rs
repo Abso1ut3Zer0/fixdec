@@ -6,9 +6,6 @@ use core::str::FromStr;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-#[cfg(feature = "serde")]
-use alloc::string::String;
-
 use crate::DecimalError;
 
 /// 64-bit fixed-point decimal with 8 decimal places of precision.
@@ -1303,85 +1300,205 @@ impl D64 {
             return Err(DecimalError::InvalidFormat);
         }
 
-        // Check for sign
-        let (is_negative, s) = if let Some(rest) = s.strip_prefix('-') {
-            (true, rest)
-        } else if let Some(rest) = s.strip_prefix('+') {
-            (false, rest)
-        } else {
-            (false, s)
+        let bytes = s.as_bytes();
+        let len = bytes.len();
+
+        // Fast path: check for negative
+        let (is_negative, start_pos) = match bytes[0] {
+            b'-' => (true, 1),
+            b'+' => (false, 1),
+            _ => (false, 0),
         };
 
-        // After stripping sign, check if empty or has another sign
-        if s.is_empty() || s.starts_with('-') || s.starts_with('+') {
+        if start_pos >= len {
             return Err(DecimalError::InvalidFormat);
         }
 
-        // Find decimal point using iterator
-        let mut parts = s.split('.');
-
-        let integer_str = parts.next().ok_or(DecimalError::InvalidFormat)?;
-        let fractional_str = parts.next();
-
-        // Ensure no more than one decimal point
-        if parts.next().is_some() {
+        // Check for double sign
+        if start_pos < len && (bytes[start_pos] == b'-' || bytes[start_pos] == b'+') {
             return Err(DecimalError::InvalidFormat);
         }
 
-        // Check for invalid case of just "."
-        if integer_str.is_empty() && fractional_str == Some("") {
-            return Err(DecimalError::InvalidFormat);
+        // Find decimal point position
+        let mut decimal_pos = None;
+        for i in start_pos..len {
+            if bytes[i] == b'.' {
+                decimal_pos = Some(i);
+                break;
+            }
         }
 
         // Parse integer part
-        let integer_part = if integer_str.is_empty() {
-            0i64
-        } else {
-            integer_str
-                .parse::<i64>()
-                .map_err(|_| DecimalError::InvalidFormat)?
-        };
+        let int_end = decimal_pos.unwrap_or(len);
+        let int_slice = &bytes[start_pos..int_end];
+
+        // Fast integer parsing - branchless digit validation
+        let mut integer_part = 0i64;
+        for &byte in int_slice {
+            let digit = byte.wrapping_sub(b'0');
+            if digit > 9 {
+                return Err(DecimalError::InvalidFormat);
+            }
+            integer_part = integer_part.wrapping_mul(10).wrapping_add(digit as i64);
+
+            // Check for overflow
+            if integer_part < 0 {
+                return Err(DecimalError::Overflow);
+            }
+        }
 
         // Parse fractional part
-        let fractional_part = if let Some(frac_str) = fractional_str {
-            if frac_str.is_empty() {
-                // Just a trailing decimal point like "123."
-                0i64
-            } else if frac_str.len() > Self::DECIMALS as usize {
-                return Err(DecimalError::PrecisionLoss);
-            } else {
-                // Parse the fractional digits and scale appropriately
-                // e.g., "45" with 8 decimals -> 45000000
-                let frac_value = frac_str
-                    .parse::<i64>()
-                    .map_err(|_| DecimalError::InvalidFormat)?;
-
-                // Calculate how many zeros to append
-                let digits_provided = frac_str.len() as u8;
-                let scale_multiplier = const_pow10(Self::DECIMALS - digits_provided);
-
-                frac_value
-                    .checked_mul(scale_multiplier)
-                    .ok_or(DecimalError::Overflow)?
+        let fractional_value = if let Some(dp) = decimal_pos {
+            let frac_start = dp + 1;
+            if frac_start >= len {
+                return Err(DecimalError::InvalidFormat);
             }
+
+            let frac_slice = &bytes[frac_start..];
+            let frac_len = frac_slice.len();
+
+            if frac_len > Self::DECIMALS as usize {
+                return Err(DecimalError::PrecisionLoss);
+            }
+
+            // Fast fractional parsing
+            let mut frac_value = 0u64;
+            for &byte in frac_slice {
+                let digit = byte.wrapping_sub(b'0');
+                if digit > 9 {
+                    return Err(DecimalError::InvalidFormat);
+                }
+                frac_value = frac_value * 10 + digit as u64;
+            }
+
+            // Scale up to 8 decimals
+            let remaining_digits = Self::DECIMALS as usize - frac_len;
+
+            // Use const lookup for common cases
+            const POWERS: [u64; 9] = [
+                1,
+                10,
+                100,
+                1_000,
+                10_000,
+                100_000,
+                1_000_000,
+                10_000_000,
+                100_000_000,
+            ];
+            frac_value * POWERS[remaining_digits]
         } else {
-            0i64
+            0
         };
 
-        // Combine integer and fractional parts
-        // Need to handle negative numbers carefully
-        let abs_int_scaled = integer_part
-            .abs()
+        // Combine parts (both positive at this point)
+        let int_scaled = integer_part
             .checked_mul(Self::SCALE)
             .ok_or(DecimalError::Overflow)?;
 
-        let abs_value = abs_int_scaled
-            .checked_add(fractional_part)
+        let abs_value = int_scaled
+            .checked_add(fractional_value as i64)
             .ok_or(DecimalError::Overflow)?;
 
-        let value = if is_negative { -abs_value } else { abs_value };
+        // Apply sign at the end
+        let value = if is_negative {
+            abs_value.checked_neg().ok_or(DecimalError::Overflow)?
+        } else {
+            abs_value
+        };
 
         Ok(Self { value })
+        // let s = s.trim();
+
+        // if s.is_empty() {
+        //     return Err(DecimalError::InvalidFormat);
+        // }
+
+        // let bytes = s.as_bytes();
+        // let len = bytes.len();
+
+        // // Fast path: check for negative
+        // let (is_negative, start_pos) = match bytes[0] {
+        //     b'-' => (true, 1),
+        //     b'+' => (false, 1),
+        //     _ => (false, 0),
+        // };
+
+        // if start_pos >= len {
+        //     return Err(DecimalError::InvalidFormat);
+        // }
+
+        // // Check for double sign
+        // if start_pos < len && (bytes[start_pos] == b'-' || bytes[start_pos] == b'+') {
+        //     return Err(DecimalError::InvalidFormat);
+        // }
+
+        // // Find decimal point position
+        // let decimal_pos = bytes[start_pos..].iter().position(|&b| b == b'.');
+
+        // // Parse integer part
+        // let int_end = decimal_pos.map(|p| start_pos + p).unwrap_or(len);
+        // let int_slice = &bytes[start_pos..int_end];
+
+        // // Fast integer parsing (always positive)
+        // let mut integer_part = 0i64;
+        // for &byte in int_slice {
+        //     if !byte.is_ascii_digit() {
+        //         return Err(DecimalError::InvalidFormat);
+        //     }
+        //     integer_part = integer_part
+        //         .checked_mul(10)
+        //         .and_then(|v| v.checked_add((byte - b'0') as i64))
+        //         .ok_or(DecimalError::Overflow)?;
+        // }
+
+        // // Parse fractional part (always positive)
+        // let fractional_value = if let Some(_) = decimal_pos {
+        //     let frac_start = int_end + 1;
+        //     if frac_start >= len {
+        //         return Err(DecimalError::InvalidFormat);
+        //     }
+
+        //     let frac_slice = &bytes[frac_start..];
+        //     let frac_len = frac_slice.len();
+
+        //     if frac_len > Self::DECIMALS as usize {
+        //         return Err(DecimalError::PrecisionLoss);
+        //     }
+
+        //     // Fast fractional parsing
+        //     let mut frac_value = 0u64;
+        //     for &byte in frac_slice {
+        //         if !byte.is_ascii_digit() {
+        //             return Err(DecimalError::InvalidFormat);
+        //         }
+        //         frac_value = frac_value * 10 + (byte - b'0') as u64;
+        //     }
+
+        //     // Scale up to 8 decimals
+        //     let remaining_digits = Self::DECIMALS as usize - frac_len;
+        //     frac_value * 10u64.pow(remaining_digits as u32)
+        // } else {
+        //     0
+        // };
+
+        // // Combine parts (both positive at this point)
+        // let int_scaled = integer_part
+        //     .checked_mul(Self::SCALE)
+        //     .ok_or(DecimalError::Overflow)?;
+
+        // let abs_value = int_scaled
+        //     .checked_add(fractional_value as i64)
+        //     .ok_or(DecimalError::Overflow)?;
+
+        // // Apply sign at the end
+        // let value = if is_negative {
+        //     abs_value.checked_neg().ok_or(DecimalError::Overflow)?
+        // } else {
+        //     abs_value
+        // };
+
+        // Ok(Self { value })
     }
 
     /// Parse assuming a fixed number of decimals (no decimal point in string)
@@ -1401,6 +1518,61 @@ impl D64 {
             .ok_or(DecimalError::Overflow)?;
 
         Ok(Self { value: scaled })
+    }
+
+    // Helper for precision formatting (not the hot path)
+    fn fmt_with_precision(
+        &self,
+        f: &mut core::fmt::Formatter<'_>,
+        precision: usize,
+    ) -> core::fmt::Result {
+        // Special case: zero with any precision should just be "0"
+        if self.value == 0 {
+            return f.write_str("0");
+        }
+
+        if precision >= Self::DECIMALS as usize {
+            // Just display what we have
+            if self.value < 0 {
+                write!(f, "-{}", self.value.unsigned_abs() / Self::SCALE as u64)?;
+            } else {
+                write!(f, "{}", self.value.unsigned_abs() / Self::SCALE as u64)?;
+            }
+            let frac = self.value.unsigned_abs() % Self::SCALE as u64;
+            if frac > 0 {
+                write!(f, ".{:08}", frac)?;
+            }
+            return Ok(());
+        }
+
+        // Round to requested precision
+        let abs_value = self.value.unsigned_abs();
+        let scale_down = Self::DECIMALS as u32 - precision as u32;
+        let divisor = 10u64.pow(scale_down);
+        let scaled_value = abs_value / divisor;
+        let remainder = abs_value % divisor;
+
+        let rounded_value = if remainder >= (divisor + 1) / 2 {
+            scaled_value + 1
+        } else {
+            scaled_value
+        };
+
+        let precision_scale = 10u64.pow(precision as u32);
+        let int_part = rounded_value / precision_scale;
+        let frac_part = rounded_value % precision_scale;
+
+        if self.value < 0 {
+            write!(f, "-{}", int_part)?;
+        } else {
+            write!(f, "{}", int_part)?;
+        }
+
+        if precision > 0 {
+            write!(f, ".{:0width$}", frac_part, width = precision)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -1767,48 +1939,102 @@ impl From<u8> for D64 {
 
 impl fmt::Display for D64 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let is_negative = self.value < 0;
-        let abs_value = self.value.unsigned_abs();
+        // Handle precision separately (not the hot path)
+        if let Some(precision) = f.precision() {
+            // ... keep the existing precision handling ...
+            return self.fmt_with_precision(f, precision);
+        }
 
-        // Get integer part from absolute value to avoid double negative
-        let integer_part = Self::div_by_scale_i64(self.value.abs());
+        // FAST PATH: Default formatting for JSON serialization
+
+        // Fast path for zero
+        if self.value == 0 {
+            return f.write_str("0");
+        }
+
+        let abs_value = self.value.unsigned_abs();
+        let integer_part = abs_value / Self::SCALE as u64;
         let fractional_part = abs_value % Self::SCALE as u64;
 
-        if is_negative {
-            f.write_str("-")?;
+        // Use a small stack buffer for the entire number
+        let mut buffer = [0u8; 32]; // enough for "-92233720368.54775807"
+        let mut pos = 0;
+
+        // Write sign
+        if self.value < 0 {
+            buffer[pos] = b'-';
+            pos += 1;
         }
 
-        write!(f, "{}", integer_part)?;
-
-        // Handle precision specifier
-        if let Some(precision) = f.precision() {
-            if precision > 0 && fractional_part > 0 {
-                // Only show decimal if non-zero
-                f.write_str(".")?;
-                let precision = precision.min(Self::DECIMALS as usize);
-                let scale_reduction = Self::DECIMALS as usize - precision;
-                let divisor = 10u64.pow(scale_reduction as u32);
-                let rounded_frac = (fractional_part + divisor / 2) / divisor;
-                write!(f, "{:0width$}", rounded_frac, width = precision)?;
-            }
+        // Write integer part - manual conversion to avoid overhead
+        if integer_part == 0 {
+            buffer[pos] = b'0';
+            pos += 1;
         } else {
-            // Default: strip trailing zeros
-            if fractional_part > 0 {
-                f.write_str(".")?;
-                // Write fractional part, then strip trailing zeros
-                let mut buf = [0u8; 8];
-                format_u64_padded(fractional_part, &mut buf);
-                // Find last non-zero digit
-                let mut end = 8;
-                while end > 0 && buf[end - 1] == b'0' {
-                    end -= 1;
+            let start = pos;
+            let mut n = integer_part;
+
+            // Convert digits (will be in reverse order)
+            while n > 0 {
+                buffer[pos] = b'0' + (n % 10) as u8;
+                n /= 10;
+                pos += 1;
+            }
+
+            // Reverse the integer digits
+            buffer[start..pos].reverse();
+        }
+
+        // Handle fractional part
+        if fractional_part > 0 {
+            buffer[pos] = b'.';
+            pos += 1;
+
+            // Remove trailing zeros first
+            let mut frac = fractional_part;
+            let mut num_zeros_removed = 0;
+            while frac % 10 == 0 {
+                frac /= 10;
+                num_zeros_removed += 1;
+            }
+
+            let digits_to_write = (Self::DECIMALS as usize) - num_zeros_removed;
+
+            if frac == 0 {
+                // All zeros after decimal - write nothing
+            } else {
+                // Write the non-zero part
+                let mut temp_frac = frac;
+                let mut temp_pos = pos;
+
+                while temp_frac > 0 {
+                    buffer[temp_pos] = b'0' + (temp_frac % 10) as u8;
+                    temp_frac /= 10;
+                    temp_pos += 1;
                 }
-                // Safety: buf contains only ASCII digits
-                let s = unsafe { core::str::from_utf8_unchecked(&buf[..end]) };
-                f.write_str(s)?;
+
+                // Reverse fractional digits
+                buffer[pos..temp_pos].reverse();
+
+                // Calculate how many leading zeros we need
+                let actual_digits = temp_pos - pos;
+                let leading_zeros = digits_to_write - actual_digits;
+
+                if leading_zeros > 0 {
+                    // Shift everything right and add leading zeros
+                    buffer.copy_within(pos..temp_pos, pos + leading_zeros);
+                    for i in 0..leading_zeros {
+                        buffer[pos + i] = b'0';
+                    }
+                }
+
+                pos = pos + digits_to_write;
             }
         }
-        Ok(())
+
+        // Write the buffer as a string
+        let s = core::str::from_utf8(&buffer[..pos]).unwrap();
+        f.write_str(s)
     }
 }
 
@@ -1862,9 +2088,14 @@ impl Serialize for D64 {
     where
         S: Serializer,
     {
-        // Serialize as string to preserve precision
-        let s = alloc::format!("{}", self);
-        serializer.serialize_str(&s)
+        if serializer.is_human_readable() {
+            // JSON, TOML, etc. - use string representation
+            // Use collect_str to avoid allocation!
+            serializer.collect_str(self)
+        } else {
+            // Bincode, MessagePack, etc. - serialize raw i64
+            self.value.serialize(serializer)
+        }
     }
 }
 
@@ -1874,8 +2105,15 @@ impl<'de> Deserialize<'de> for D64 {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        Self::from_str(&s).map_err(de::Error::custom)
+        if deserializer.is_human_readable() {
+            // JSON, TOML, etc. - parse from string
+            let s = alloc::string::String::deserialize(deserializer)?;
+            Self::from_str(&s).map_err(de::Error::custom)
+        } else {
+            // Bincode, MessagePack, etc. - deserialize raw i64
+            let value = i64::deserialize(deserializer)?;
+            Ok(Self { value })
+        }
     }
 }
 
@@ -1927,15 +2165,6 @@ const fn isqrt(n: u64) -> u64 {
     }
 
     right
-}
-
-/// Format a u64 with leading zeros into a fixed-size buffer
-#[inline(always)]
-fn format_u64_padded(mut n: u64, buf: &mut [u8; 8]) {
-    for i in (0..8).rev() {
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-    }
 }
 
 #[cfg(test)]
