@@ -4,9 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+serde = { version = "1.0.228", optional = true }
 thiserror = "2.0.17"
 
 [features]
 default = []
 alloc = []
 std = ["alloc"]
+serde = ["dep:serde", "alloc"]
+full = ["std", "serde"]
+
+[dev-dependencies]
+serde_json = "1.0.145"

@@ -2,6 +2,12 @@ use core::fmt;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 use core::str::FromStr;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+#[cfg(feature = "serde")]
+use alloc::string::String;
+
 use crate::DecimalError;
 
 /// 64-bit fixed-point decimal with 8 decimal places of precision.
@@ -1398,6 +1404,29 @@ impl fmt::Debug for D64 {
     }
 }
 
+#[cfg(feature = "serde")]
+impl Serialize for D64 {
+    fn serialize<S>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Serialize as string to preserve precision
+        let s = alloc::format!("{}", self);
+        serializer.serialize_str(&s)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for D64 {
+    fn deserialize<D>(deserializer: D) -> core::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Self::from_str(&s).map_err(de::Error::custom)
+    }
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -2136,6 +2165,53 @@ mod display_tests {
     fn test_display_zero() {
         assert_eq!(format!("{}", D64::ZERO), "0");
         assert_eq!(format!("{:.2}", D64::ZERO), "0");
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn test_serialize() {
+        let d = D64::from_str("123.45").unwrap();
+        let json = serde_json::to_string(&d).unwrap();
+        assert_eq!(json, r#""123.45""#);
+    }
+
+    #[test]
+    fn test_deserialize() {
+        let json = r#""123.45""#;
+        let d: D64 = serde_json::from_str(json).unwrap();
+        assert_eq!(d, D64::from_str("123.45").unwrap());
+    }
+
+    #[test]
+    fn test_round_trip() {
+        let original = D64::from_str("123.456789").unwrap();
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: D64 = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_deserialize_integer() {
+        let json = r#""42""#;
+        let d: D64 = serde_json::from_str(json).unwrap();
+        assert_eq!(d, D64::from_i32(42));
+    }
+
+    #[test]
+    fn test_serialize_zero() {
+        let json = serde_json::to_string(&D64::ZERO).unwrap();
+        assert_eq!(json, r#""0""#);
+    }
+
+    #[test]
+    fn test_serialize_negative() {
+        let d = D64::from_str("-123.45").unwrap();
+        let json = serde_json::to_string(&d).unwrap();
+        assert_eq!(json, r#""-123.45""#);
     }
 }
 
