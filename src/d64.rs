@@ -13,6 +13,10 @@ pub struct D64 {
     value: i64,
 }
 
+// ============================================================================
+// Constants
+// ============================================================================
+
 impl D64 {
     /// The scale factor: 10^8
     pub const SCALE: i64 = 100_000_000;
@@ -56,7 +60,13 @@ impl D64 {
     pub const BASIS_POINT: Self = Self {
         value: Self::SCALE / 10_000,
     };
+}
 
+// ============================================================================
+// Constructors and Raw Access
+// ============================================================================
+
+impl D64 {
     /// Creates a new D64 from a raw scaled value.
     ///
     /// # Safety
@@ -71,9 +81,13 @@ impl D64 {
     pub const fn to_raw(self) -> i64 {
         self.value
     }
+}
 
-    // ===== Addition =====
+// ============================================================================
+// Arithmetic Operations - Addition
+// ============================================================================
 
+impl D64 {
     /// Checked addition. Returns `None` if overflow occurred.
     #[inline]
     #[must_use = "this returns the result of the operation, without modifying the original"]
@@ -103,8 +117,22 @@ impl D64 {
         }
     }
 
-    // ===== Subtraction =====
+    /// Checked addition. Returns an error if overflow occurred.
+    #[inline]
+    #[must_use = "this returns the result of the operation, without modifying the original"]
+    pub const fn try_add(self, rhs: Self) -> crate::Result<Self> {
+        match self.checked_add(rhs) {
+            Some(result) => Ok(result),
+            None => Err(DecimalError::Overflow),
+        }
+    }
+}
 
+// ============================================================================
+// Arithmetic Operations - Subtraction
+// ============================================================================
+
+impl D64 {
     /// Checked subtraction. Returns `None` if overflow occurred.
     #[inline]
     #[must_use = "this returns the result of the operation, without modifying the original"]
@@ -134,8 +162,22 @@ impl D64 {
         }
     }
 
-    // ===== Multiplication =====
+    /// Checked subtraction. Returns an error if overflow occurred.
+    #[inline]
+    #[must_use = "this returns the result of the operation, without modifying the original"]
+    pub const fn try_sub(self, rhs: Self) -> crate::Result<Self> {
+        match self.checked_sub(rhs) {
+            Some(result) => Ok(result),
+            None => Err(DecimalError::Overflow),
+        }
+    }
+}
 
+// ============================================================================
+// Arithmetic Operations - Multiplication
+// ============================================================================
+
+impl D64 {
     /// Checked multiplication. Returns `None` if overflow occurred.
     ///
     /// Internally widens to i128 to prevent intermediate overflow.
@@ -192,8 +234,22 @@ impl D64 {
         }
     }
 
-    // ===== Division =====
+    /// Checked multiplication. Returns an error if overflow occurred.
+    #[inline]
+    #[must_use = "this returns the result of the operation, without modifying the original"]
+    pub const fn try_mul(self, rhs: Self) -> crate::Result<Self> {
+        match self.checked_mul(rhs) {
+            Some(result) => Ok(result),
+            None => Err(DecimalError::Overflow),
+        }
+    }
+}
 
+// ============================================================================
+// Arithmetic Operations - Division
+// ============================================================================
+
+impl D64 {
     /// Checked division. Returns `None` if `rhs` is zero or overflow occurred.
     ///
     /// Internally widens to i128 to maintain precision.
@@ -262,8 +318,25 @@ impl D64 {
         }
     }
 
-    // ===== Negation =====
+    /// Checked division. Returns an error if `rhs` is zero or overflow occurred.
+    #[inline]
+    #[must_use = "this returns the result of the operation, without modifying the original"]
+    pub const fn try_div(self, rhs: Self) -> crate::Result<Self> {
+        if rhs.value == 0 {
+            return Err(DecimalError::DivisionByZero);
+        }
+        match self.checked_div(rhs) {
+            Some(result) => Ok(result),
+            None => Err(DecimalError::Overflow),
+        }
+    }
+}
 
+// ============================================================================
+// Arithmetic Operations - Negation
+// ============================================================================
+
+impl D64 {
     /// Checked negation. Returns `None` if the result would overflow.
     #[inline]
     #[must_use = "this returns the result of the operation, without modifying the original"]
@@ -293,8 +366,22 @@ impl D64 {
         }
     }
 
-    // ===== Absolute Value =====
+    /// Checked negation. Returns an error if overflow occurred.
+    #[inline]
+    #[must_use = "this returns the result of the operation, without modifying the original"]
+    pub const fn try_neg(self) -> crate::Result<Self> {
+        match self.checked_neg() {
+            Some(result) => Ok(result),
+            None => Err(DecimalError::Overflow),
+        }
+    }
+}
 
+// ============================================================================
+// Arithmetic Operations - Absolute Value
+// ============================================================================
+
+impl D64 {
     /// Returns the absolute value of `self`.
     #[inline]
     #[must_use = "this returns the result of the operation, without modifying the original"]
@@ -339,8 +426,22 @@ impl D64 {
         }
     }
 
-    // ===== Sign Operations =====
+    /// Checked absolute value. Returns an error if overflow occurred.
+    #[inline]
+    #[must_use = "this returns the result of the operation, without modifying the original"]
+    pub const fn try_abs(self) -> crate::Result<Self> {
+        match self.checked_abs() {
+            Some(result) => Ok(result),
+            None => Err(DecimalError::Overflow),
+        }
+    }
+}
 
+// ============================================================================
+// Sign Operations
+// ============================================================================
+
+impl D64 {
     /// Returns `true` if `self` is positive.
     #[inline]
     pub const fn is_positive(self) -> bool {
@@ -370,163 +471,13 @@ impl D64 {
             0
         }
     }
+}
 
-    // ===== Integer Conversions =====
+// ============================================================================
+// Comparison Utilities
+// ============================================================================
 
-    /// Creates a D64 from an i64 integer.
-    #[inline]
-    pub const fn from_i64(value: i64) -> Option<Self> {
-        // Check if multiplication would overflow
-        match value.checked_mul(Self::SCALE) {
-            Some(scaled) => Some(Self { value: scaled }),
-            None => None,
-        }
-    }
-
-    /// Creates a D64 from an i32 integer (always succeeds).
-    #[inline]
-    pub const fn from_i32(value: i32) -> Self {
-        Self {
-            value: value as i64 * Self::SCALE,
-        }
-    }
-
-    /// Creates a D64 from a u32 integer (always succeeds).
-    #[inline]
-    pub const fn from_u32(value: u32) -> Self {
-        Self {
-            value: value as i64 * Self::SCALE,
-        }
-    }
-
-    /// Creates a D64 from a u64 integer.
-    #[inline]
-    pub const fn from_u64(value: u64) -> Option<Self> {
-        if value > i64::MAX as u64 / Self::SCALE as u64 {
-            None
-        } else {
-            Some(Self {
-                value: value as i64 * Self::SCALE,
-            })
-        }
-    }
-
-    /// Converts to i64, truncating any fractional part.
-    #[inline]
-    pub const fn to_i64(self) -> i64 {
-        self.value / Self::SCALE
-    }
-
-    /// Converts to i64, rounding to nearest (banker's rounding on ties).
-    #[inline]
-    pub const fn to_i64_round(self) -> i64 {
-        let quotient = self.value / Self::SCALE;
-        let remainder = self.value % Self::SCALE;
-        let half = Self::SCALE / 2;
-
-        if remainder > half {
-            quotient + 1
-        } else if remainder < -half {
-            quotient - 1
-        } else if remainder == half || remainder == -half {
-            // Banker's rounding: round to even
-            if quotient % 2 == 0 {
-                quotient
-            } else {
-                quotient + 1
-            }
-        } else {
-            quotient
-        }
-    }
-
-    // ===== Float Conversions =====
-
-    /// Creates a D64 from an f64.
-    ///
-    /// Returns `None` if the value is NaN, infinite, or out of range.
-    #[inline]
-    pub fn from_f64(value: f64) -> Option<Self> {
-        if !value.is_finite() {
-            return None;
-        }
-
-        let scaled = value * Self::SCALE as f64;
-
-        if scaled > i64::MAX as f64 || scaled < i64::MIN as f64 {
-            return None;
-        }
-
-        Some(Self {
-            value: scaled.round() as i64,
-        })
-    }
-
-    /// Converts to f64.
-    ///
-    /// Note: May lose precision for very large values.
-    #[inline]
-    pub fn to_f64(self) -> f64 {
-        self.value as f64 / Self::SCALE as f64
-    }
-
-    /// Creates a D64 from an f32.
-    #[inline]
-    pub fn from_f32(value: f32) -> Option<Self> {
-        Self::from_f64(value as f64)
-    }
-
-    /// Converts to f32.
-    ///
-    /// Note: May lose precision.
-    #[inline]
-    pub fn to_f32(self) -> f32 {
-        self.to_f64() as f32
-    }
-
-    // ===== Fallible Conversions with Error Type =====
-
-    /// Creates a D64 from an i64, returning an error on overflow.
-    #[inline]
-    pub const fn try_from_i64(value: i64) -> crate::Result<Self> {
-        match Self::from_i64(value) {
-            Some(v) => Ok(v),
-            None => Err(DecimalError::Overflow),
-        }
-    }
-
-    /// Creates a D64 from a u64, returning an error on overflow.
-    #[inline]
-    pub const fn try_from_u64(value: u64) -> crate::Result<Self> {
-        match Self::from_u64(value) {
-            Some(v) => Ok(v),
-            None => Err(DecimalError::Overflow),
-        }
-    }
-
-    /// Creates a D64 from an f64, returning an error if invalid.
-    #[inline]
-    pub fn try_from_f64(value: f64) -> crate::Result<Self> {
-        if value.is_nan() || value.is_infinite() {
-            return Err(DecimalError::InvalidFormat);
-        }
-
-        let scaled = value * Self::SCALE as f64;
-
-        if scaled > i64::MAX as f64 {
-            return Err(DecimalError::Overflow);
-        }
-        if scaled < i64::MIN as f64 {
-            return Err(DecimalError::Underflow);
-        }
-
-        Ok(Self {
-            value: scaled.round() as i64,
-        })
-    }
-
-    // ===== Comparison Utilities =====
-
+impl D64 {
     /// Returns the minimum of two values.
     #[inline]
     #[must_use = "this returns the result of the operation, without modifying the original"]
@@ -572,9 +523,13 @@ impl D64 {
             self
         }
     }
+}
 
-    // ===== Rounding Operations =====
+// ============================================================================
+// Rounding Operations
+// ============================================================================
 
+impl D64 {
     /// Returns the largest integer less than or equal to `self`.
     #[inline]
     #[must_use = "this returns the result of the operation, without modifying the original"]
@@ -713,9 +668,13 @@ impl D64 {
             value: rounded * rounding_factor,
         }
     }
+}
 
-    // ===== Mathematical Operations =====
+// ============================================================================
+// Mathematical Operations
+// ============================================================================
 
+impl D64 {
     /// Returns the reciprocal (multiplicative inverse) of `self`.
     ///
     /// Returns `None` if `self` is zero.
@@ -726,6 +685,16 @@ impl D64 {
             None
         } else {
             Self::ONE.checked_div(self)
+        }
+    }
+
+    /// Checked reciprocal. Returns an error if `self` is zero.
+    #[inline]
+    #[must_use = "this returns the result of the operation, without modifying the original"]
+    pub const fn try_recip(self) -> crate::Result<Self> {
+        match self.recip() {
+            Some(result) => Ok(result),
+            None => Err(DecimalError::DivisionByZero),
         }
     }
 
@@ -771,6 +740,16 @@ impl D64 {
         }
 
         Some(result)
+    }
+
+    /// Checked integer power. Returns an error if overflow occurred.
+    #[inline]
+    #[must_use = "this returns the result of the operation, without modifying the original"]
+    pub const fn try_powi(self, exp: i32) -> crate::Result<Self> {
+        match self.powi(exp) {
+            Some(result) => Ok(result),
+            None => Err(DecimalError::Overflow),
+        }
     }
 
     /// Returns the square root of `self` using Newton's method.
@@ -832,101 +811,182 @@ impl D64 {
         }
     }
 
-    // ===== Arithmetic Operations with Result =====
-
-    /// Checked addition. Returns an error if overflow occurred.
-    #[inline]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
-    pub const fn try_add(self, rhs: Self) -> crate::Result<Self> {
-        match self.checked_add(rhs) {
-            Some(result) => Ok(result),
-            None => Err(DecimalError::Overflow),
-        }
-    }
-
-    /// Checked subtraction. Returns an error if overflow occurred.
-    #[inline]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
-    pub const fn try_sub(self, rhs: Self) -> crate::Result<Self> {
-        match self.checked_sub(rhs) {
-            Some(result) => Ok(result),
-            None => Err(DecimalError::Overflow),
-        }
-    }
-
-    /// Checked multiplication. Returns an error if overflow occurred.
-    #[inline]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
-    pub const fn try_mul(self, rhs: Self) -> crate::Result<Self> {
-        match self.checked_mul(rhs) {
-            Some(result) => Ok(result),
-            None => Err(DecimalError::Overflow),
-        }
-    }
-
-    /// Checked division. Returns an error if `rhs` is zero or overflow occurred.
-    #[inline]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
-    pub const fn try_div(self, rhs: Self) -> crate::Result<Self> {
-        if rhs.value == 0 {
-            return Err(DecimalError::DivisionByZero);
-        }
-        match self.checked_div(rhs) {
-            Some(result) => Ok(result),
-            None => Err(DecimalError::Overflow),
-        }
-    }
-
-    /// Checked negation. Returns an error if overflow occurred.
-    #[inline]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
-    pub const fn try_neg(self) -> crate::Result<Self> {
-        match self.checked_neg() {
-            Some(result) => Ok(result),
-            None => Err(DecimalError::Overflow),
-        }
-    }
-
-    /// Checked absolute value. Returns an error if overflow occurred.
-    #[inline]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
-    pub const fn try_abs(self) -> crate::Result<Self> {
-        match self.checked_abs() {
-            Some(result) => Ok(result),
-            None => Err(DecimalError::Overflow),
-        }
-    }
-
-    /// Checked reciprocal. Returns an error if `self` is zero.
-    #[inline]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
-    pub const fn try_recip(self) -> crate::Result<Self> {
-        match self.recip() {
-            Some(result) => Ok(result),
-            None => Err(DecimalError::DivisionByZero),
-        }
-    }
-
-    /// Checked integer power. Returns an error if overflow occurred.
-    #[inline]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
-    pub const fn try_powi(self, exp: i32) -> crate::Result<Self> {
-        match self.powi(exp) {
-            Some(result) => Ok(result),
-            None => Err(DecimalError::Overflow),
-        }
-    }
-
     /// Checked square root. Returns an error if `self` is negative.
     #[inline]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn try_sqrt(self) -> crate::Result<Self> {
         match self.sqrt() {
             Some(result) => Ok(result),
-            None => Err(DecimalError::InvalidFormat), // or create a new error variant like NegativeSqrt
+            None => Err(DecimalError::InvalidFormat),
+        }
+    }
+}
+
+// ============================================================================
+// Integer Conversions
+// ============================================================================
+
+impl D64 {
+    /// Creates a D64 from an i64 integer.
+    #[inline]
+    pub const fn from_i64(value: i64) -> Option<Self> {
+        // Check if multiplication would overflow
+        match value.checked_mul(Self::SCALE) {
+            Some(scaled) => Some(Self { value: scaled }),
+            None => None,
         }
     }
 
+    /// Creates a D64 from an i32 integer (always succeeds).
+    #[inline]
+    pub const fn from_i32(value: i32) -> Self {
+        Self {
+            value: value as i64 * Self::SCALE,
+        }
+    }
+
+    /// Creates a D64 from a u32 integer (always succeeds).
+    #[inline]
+    pub const fn from_u32(value: u32) -> Self {
+        Self {
+            value: value as i64 * Self::SCALE,
+        }
+    }
+
+    /// Creates a D64 from a u64 integer.
+    #[inline]
+    pub const fn from_u64(value: u64) -> Option<Self> {
+        if value > i64::MAX as u64 / Self::SCALE as u64 {
+            None
+        } else {
+            Some(Self {
+                value: value as i64 * Self::SCALE,
+            })
+        }
+    }
+
+    /// Converts to i64, truncating any fractional part.
+    #[inline]
+    pub const fn to_i64(self) -> i64 {
+        self.value / Self::SCALE
+    }
+
+    /// Converts to i64, rounding to nearest (banker's rounding on ties).
+    #[inline]
+    pub const fn to_i64_round(self) -> i64 {
+        let quotient = self.value / Self::SCALE;
+        let remainder = self.value % Self::SCALE;
+        let half = Self::SCALE / 2;
+
+        if remainder > half {
+            quotient + 1
+        } else if remainder < -half {
+            quotient - 1
+        } else if remainder == half || remainder == -half {
+            // Banker's rounding: round to even
+            if quotient % 2 == 0 {
+                quotient
+            } else {
+                quotient + 1
+            }
+        } else {
+            quotient
+        }
+    }
+
+    /// Creates a D64 from an i64, returning an error on overflow.
+    #[inline]
+    pub const fn try_from_i64(value: i64) -> crate::Result<Self> {
+        match Self::from_i64(value) {
+            Some(v) => Ok(v),
+            None => Err(DecimalError::Overflow),
+        }
+    }
+
+    /// Creates a D64 from a u64, returning an error on overflow.
+    #[inline]
+    pub const fn try_from_u64(value: u64) -> crate::Result<Self> {
+        match Self::from_u64(value) {
+            Some(v) => Ok(v),
+            None => Err(DecimalError::Overflow),
+        }
+    }
+}
+
+// ============================================================================
+// Float Conversions
+// ============================================================================
+
+impl D64 {
+    /// Creates a D64 from an f64.
+    ///
+    /// Returns `None` if the value is NaN, infinite, or out of range.
+    #[inline]
+    pub fn from_f64(value: f64) -> Option<Self> {
+        if !value.is_finite() {
+            return None;
+        }
+
+        let scaled = value * Self::SCALE as f64;
+
+        if scaled > i64::MAX as f64 || scaled < i64::MIN as f64 {
+            return None;
+        }
+
+        Some(Self {
+            value: scaled.round() as i64,
+        })
+    }
+
+    /// Converts to f64.
+    ///
+    /// Note: May lose precision for very large values.
+    #[inline]
+    pub fn to_f64(self) -> f64 {
+        self.value as f64 / Self::SCALE as f64
+    }
+
+    /// Creates a D64 from an f32.
+    #[inline]
+    pub fn from_f32(value: f32) -> Option<Self> {
+        Self::from_f64(value as f64)
+    }
+
+    /// Converts to f32.
+    ///
+    /// Note: May lose precision.
+    #[inline]
+    pub fn to_f32(self) -> f32 {
+        self.to_f64() as f32
+    }
+
+    /// Creates a D64 from an f64, returning an error if invalid.
+    #[inline]
+    pub fn try_from_f64(value: f64) -> crate::Result<Self> {
+        if value.is_nan() || value.is_infinite() {
+            return Err(DecimalError::InvalidFormat);
+        }
+
+        let scaled = value * Self::SCALE as f64;
+
+        if scaled > i64::MAX as f64 {
+            return Err(DecimalError::Overflow);
+        }
+        if scaled < i64::MIN as f64 {
+            return Err(DecimalError::Underflow);
+        }
+
+        Ok(Self {
+            value: scaled.round() as i64,
+        })
+    }
+}
+
+// ============================================================================
+// String Parsing
+// ============================================================================
+
+impl D64 {
     /// Parses a decimal string into a D64.
     ///
     /// Supports formats like: "123", "123.45", "-123.45", "0.00000001"
@@ -1020,17 +1080,7 @@ impl D64 {
             .checked_add(fractional_part)
             .ok_or(DecimalError::Overflow)?;
 
-        let value = if is_negative {
-            // Handle the case where integer_part might already be negative
-            if integer_part < 0 {
-                // Integer part was negative (like "-0" edge case)
-                -abs_value
-            } else {
-                -abs_value
-            }
-        } else {
-            abs_value
-        };
+        let value = if is_negative { -abs_value } else { abs_value };
 
         Ok(Self { value })
     }
@@ -1044,8 +1094,10 @@ impl FromStr for D64 {
     }
 }
 
-// ===== Operator Overloading =====
-// These use checked operations and panic on overflow (matching std behavior)
+// ============================================================================
+// Operator Overloading
+// ============================================================================
+
 impl Add for D64 {
     type Output = Self;
 
@@ -1094,7 +1146,6 @@ impl Neg for D64 {
     }
 }
 
-// Compound assignment operators
 impl AddAssign for D64 {
     #[inline]
     fn add_assign(&mut self, rhs: Self) {
@@ -1123,7 +1174,9 @@ impl DivAssign for D64 {
     }
 }
 
-// ===== TryFrom implementations =====
+// ============================================================================
+// Standard Library Trait Implementations
+// ============================================================================
 
 impl TryFrom<i64> for D64 {
     type Error = DecimalError;
@@ -1160,8 +1213,6 @@ impl TryFrom<f32> for D64 {
         Self::try_from_f64(value as f64)
     }
 }
-
-// ===== From implementations for types that always succeed =====
 
 impl From<i32> for D64 {
     #[inline]
@@ -1205,7 +1256,9 @@ impl From<u8> for D64 {
     }
 }
 
-// ===== Helper Functions =====
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
 /// Compute 10^n at compile time for rounding operations
 const fn const_pow10(n: u8) -> i64 {
@@ -1877,4 +1930,3 @@ mod string_tests {
         assert!(D64::from_str("123-").is_err());
     }
 }
-
