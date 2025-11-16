@@ -220,6 +220,233 @@ impl D64 {
         // Reverse: (value * 10_000) / SCALE
         Self::div_by_scale_i64(self.value * 10_000)
     }
+
+    /// Creates a D64 from a mantissa and scale (like rust_decimal).
+    ///
+    /// The scale represents the number of decimal places.
+    /// For example: `with_scale(12345, 2)` = 123.45
+    ///
+    /// # Panics
+    ///
+    /// Panics if:
+    /// - The scale is greater than 8 (our max precision)
+    /// - The resulting value is out of bounds for D64
+    #[inline]
+    pub fn with_scale(mantissa: i64, scale: u32) -> Self {
+        assert!(
+            scale <= Self::DECIMALS as u32,
+            "scale exceeds D64 precision (max 8 decimals)"
+        );
+
+        // Convert mantissa from given scale to our fixed scale (8 decimals)
+        // If scale < 8, we need to multiply by 10^(8-scale)
+        // If scale = 8, mantissa is already in the right scale
+
+        let scale_diff = Self::DECIMALS as u32 - scale;
+
+        if scale_diff == 0 {
+            // Already at our scale
+            Self { value: mantissa }
+        } else {
+            // Need to multiply by 10^scale_diff
+            let multiplier = const_pow10_i64(scale_diff as u8);
+
+            match mantissa.checked_mul(multiplier) {
+                Some(value) => Self { value },
+                None => panic!("overflow: mantissa * 10^{} exceeds D64 range", scale_diff),
+            }
+        }
+    }
+
+    /// Creates a D64 from a mantissa and scale, returning None on error.
+    ///
+    /// Like `with_scale` but returns None instead of panicking.
+    #[inline]
+    pub const fn try_with_scale(mantissa: i64, scale: u32) -> Option<Self> {
+        if scale > Self::DECIMALS as u32 {
+            return None;
+        }
+
+        let scale_diff = Self::DECIMALS as u32 - scale;
+
+        if scale_diff == 0 {
+            Some(Self { value: mantissa })
+        } else {
+            let multiplier = const_pow10_i64(scale_diff as u8);
+
+            match mantissa.checked_mul(multiplier) {
+                Some(value) => Some(Self { value }),
+                None => None,
+            }
+        }
+    }
+
+    /// Creates a D64 from a mantissa and scale, rounding if necessary.
+    ///
+    /// If the scale is greater than 8, the mantissa will be divided by 10^(scale-8)
+    /// to fit our precision, rounding to the nearest even number (banker's rounding).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resulting value (after rounding) is out of bounds for D64.
+    #[inline]
+    pub fn with_scale_lossy(mantissa: i64, scale: u32) -> Self {
+        if scale <= Self::DECIMALS as u32 {
+            // Fast path: no rounding needed
+            let scale_diff = Self::DECIMALS as u32 - scale;
+
+            if scale_diff == 0 {
+                Self { value: mantissa }
+            } else {
+                let multiplier = const_pow10_i64(scale_diff as u8);
+                match mantissa.checked_mul(multiplier) {
+                    Some(value) => Self { value },
+                    None => panic!("overflow: mantissa * 10^{} exceeds D64 range", scale_diff),
+                }
+            }
+        } else {
+            // Need to round: divide by 10^(scale - 8)
+            let scale_diff = scale - Self::DECIMALS as u32;
+
+            // For very large scale differences, the result will be 0 or very close to 0
+            // We handle this by repeatedly dividing by manageable powers of 10
+            let mut result = mantissa;
+            let mut remaining_scale = scale_diff;
+
+            // Divide by 10^8 repeatedly for very large scales
+            while remaining_scale >= 8 {
+                result /= 100_000_000;
+                remaining_scale -= 8;
+
+                // Early exit if we've already rounded to 0
+                if result == 0 {
+                    return Self::ZERO;
+                }
+            }
+
+            // Handle remaining scale (0-7)
+            if remaining_scale == 0 {
+                Self { value: result }
+            } else {
+                let divisor = const_pow10_i64(remaining_scale as u8);
+
+                let quotient = result / divisor;
+                let remainder = result % divisor;
+
+                // Banker's rounding
+                let half = divisor / 2;
+                let rounded = if remainder.abs() > half {
+                    // Round away from zero
+                    if result >= 0 {
+                        quotient + 1
+                    } else {
+                        quotient - 1
+                    }
+                } else if remainder.abs() == half {
+                    // Exactly half - round to even
+                    if quotient % 2 == 0 {
+                        quotient
+                    } else {
+                        if result >= 0 {
+                            quotient + 1
+                        } else {
+                            quotient - 1
+                        }
+                    }
+                } else {
+                    quotient
+                };
+
+                Self { value: rounded }
+            }
+        }
+    }
+
+    /// Creates a D64 from a mantissa and scale, rounding if necessary, returns None on error.
+    ///
+    /// Like `with_scale_lossy` but returns None instead of panicking on overflow.
+    #[inline]
+    pub const fn try_with_scale_lossy(mantissa: i64, scale: u32) -> Option<Self> {
+        if scale <= Self::DECIMALS as u32 {
+            // Fast path: no rounding needed
+            let scale_diff = Self::DECIMALS as u32 - scale;
+
+            if scale_diff == 0 {
+                Some(Self { value: mantissa })
+            } else {
+                let multiplier = const_pow10_i64(scale_diff as u8);
+                match mantissa.checked_mul(multiplier) {
+                    Some(value) => Some(Self { value }),
+                    None => None,
+                }
+            }
+        } else {
+            // Need to round: divide by 10^(scale - 8)
+            let scale_diff = scale - Self::DECIMALS as u32;
+
+            // For very large scale differences, repeatedly divide
+            let mut result = mantissa;
+            let mut remaining_scale = scale_diff;
+
+            while remaining_scale >= 8 {
+                result /= 100_000_000;
+                remaining_scale -= 8;
+
+                if result == 0 {
+                    return Some(Self::ZERO);
+                }
+            }
+
+            // Handle remaining scale (0-7)
+            if remaining_scale == 0 {
+                Some(Self { value: result })
+            } else {
+                let divisor = const_pow10_i64(remaining_scale as u8);
+
+                let quotient = result / divisor;
+                let remainder = result % divisor;
+
+                // Banker's rounding
+                let half = divisor / 2;
+                let rounded = if remainder.abs() > half {
+                    if result >= 0 {
+                        quotient + 1
+                    } else {
+                        quotient - 1
+                    }
+                } else if remainder.abs() == half {
+                    if quotient % 2 == 0 {
+                        quotient
+                    } else {
+                        if result >= 0 {
+                            quotient + 1
+                        } else {
+                            quotient - 1
+                        }
+                    }
+                } else {
+                    quotient
+                };
+
+                Some(Self { value: rounded })
+            }
+        }
+    }
+}
+
+const fn const_pow10_i64(n: u8) -> i64 {
+    match n {
+        0 => 1,
+        1 => 10,
+        2 => 100,
+        3 => 1_000,
+        4 => 10_000,
+        5 => 100_000,
+        6 => 1_000_000,
+        7 => 10_000_000,
+        8 => 100_000_000,
+        _ => panic!("pow10_i64: exponent too large"),
+    }
 }
 
 // ============================================================================
@@ -2236,6 +2463,8 @@ const fn isqrt(n: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::string::ToString;
+
     use super::*;
 
     #[test]
@@ -2331,6 +2560,129 @@ mod tests {
         assert_eq!(D64::ONE.signum(), 1);
         assert_eq!(D64::ZERO.signum(), 0);
         assert_eq!(D64::from_raw(-100_000_000).signum(), -1);
+    }
+
+    // new_from_mantissa_scale tests
+    #[test]
+    fn test_d64_mantissa_scale_basic() {
+        let d = D64::with_scale(12345, 2);
+        assert_eq!(d, D64::from_str_exact("123.45").unwrap());
+    }
+
+    #[test]
+    fn test_d64_mantissa_scale_zero_scale() {
+        let d = D64::with_scale(123, 0);
+        assert_eq!(d, D64::from_str_exact("123").unwrap());
+    }
+
+    #[test]
+    fn test_d64_mantissa_scale_full_precision() {
+        let d = D64::with_scale(100000000, 8);
+        assert_eq!(d, D64::ONE);
+    }
+
+    #[test]
+    fn test_d64_mantissa_scale_negative() {
+        let d = D64::with_scale(-12345, 2);
+        assert_eq!(d, D64::from_str_exact("-123.45").unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "scale exceeds D64 precision")]
+    fn test_d64_mantissa_scale_panic_too_precise() {
+        let _ = D64::with_scale(123456789, 9);
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn test_d64_mantissa_scale_panic_overflow() {
+        let _ = D64::with_scale(i64::MAX, 0);
+    }
+
+    // try_from_mantissa_scale tests
+    #[test]
+    fn test_d64_try_mantissa_scale_success() {
+        let d = D64::try_with_scale(12345, 2).unwrap();
+        assert_eq!(d, D64::from_str_exact("123.45").unwrap());
+    }
+
+    #[test]
+    fn test_d64_try_mantissa_scale_too_precise() {
+        assert!(D64::try_with_scale(123456789, 9).is_none());
+    }
+
+    #[test]
+    fn test_d64_try_mantissa_scale_overflow() {
+        assert!(D64::try_with_scale(i64::MAX, 0).is_none());
+    }
+
+    // new_from_mantissa_scale_lossy tests
+    #[test]
+    fn test_d64_lossy_exact() {
+        let d = D64::with_scale_lossy(12345, 2);
+        assert_eq!(d, D64::from_str_exact("123.45").unwrap());
+    }
+
+    #[test]
+    fn test_d64_lossy_rounds_down() {
+        // 0.123456784 with 9 decimals -> 0.12345678
+        let d = D64::with_scale_lossy(123456784, 9);
+        assert_eq!(d, D64::from_str_exact("0.12345678").unwrap());
+    }
+
+    #[test]
+    fn test_d64_lossy_rounds_up() {
+        // 0.123456786 with 9 decimals -> 0.12345679
+        let d = D64::with_scale_lossy(123456786, 9);
+        assert_eq!(d, D64::from_str_exact("0.12345679").unwrap());
+    }
+
+    #[test]
+    fn test_d64_lossy_bankers_rounding_even() {
+        // 0.123456785 -> round to even (0.12345678)
+        let d = D64::with_scale_lossy(123456785, 9);
+        assert_eq!(d, D64::from_str_exact("0.12345678").unwrap());
+    }
+
+    #[test]
+    fn test_d64_lossy_bankers_rounding_odd() {
+        // 0.123456795 -> round to even (0.12345680)
+        let d = D64::with_scale_lossy(123456795, 9);
+        assert_eq!(d, D64::from_str_exact("0.12345680").unwrap());
+    }
+
+    #[test]
+    fn test_d64_lossy_large_scale() {
+        // 1 with scale 20 should round to 0
+        let d = D64::with_scale_lossy(1, 20);
+        assert_eq!(d, D64::ZERO);
+    }
+
+    #[test]
+    fn test_d64_lossy_negative() {
+        let d = D64::with_scale_lossy(-123456786, 9);
+        assert_eq!(d, D64::from_str_exact("-0.12345679").unwrap());
+    }
+
+    // try_from_mantissa_scale_lossy tests
+    #[test]
+    fn test_d64_try_lossy_success() {
+        let d = D64::try_with_scale_lossy(123456786, 9).unwrap();
+        assert_eq!(d, D64::from_str_exact("0.12345679").unwrap());
+    }
+
+    #[test]
+    fn test_d64_try_lossy_overflow() {
+        // Even with rounding, i64::MAX at scale 0 is too large
+        assert!(D64::try_with_scale_lossy(i64::MAX, 0).is_none());
+    }
+
+    // Compatibility with rust_decimal patterns
+    #[test]
+    fn test_d64_rust_decimal_compat() {
+        // rust_decimal::Decimal::new(12345, 2) equivalent
+        let d = D64::with_scale(12345, 2);
+        assert_eq!(d.to_string(), "123.45");
     }
 }
 
