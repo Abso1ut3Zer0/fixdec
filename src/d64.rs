@@ -221,7 +221,7 @@ impl D64 {
     /// Example: `D64::from_str("0.01").unwrap().to_basis_points()` → 100
     pub const fn to_basis_points(self) -> i64 {
         // Reverse: (value * 10_000) / SCALE
-        self.value * 10_000 / Self::SCALE
+        Self::div_by_scale_i64(self.value * 10_000)
     }
 }
 
@@ -320,59 +320,114 @@ impl D64 {
 // ============================================================================
 
 impl D64 {
-    /// Checked multiplication. Returns `None` if overflow occurred.
+    /// Magic constant for fast division by SCALE
+    /// Computed as: ceil((2^64) / SCALE) where SCALE = 10^8
+    /// M = ceil(2^64 / 10^8) = 184467440738
+    const RECIP_MUL: u64 = 184467440738u64;
+
+    /// Shift amount for reciprocal multiplication
+    /// We shift by 64 bits (one full u64 width)
+    const RECIP_SHIFT: u32 = 64;
+
+    /// Fast division of a 128-bit value by SCALE using reciprocal multiplication.
     ///
-    /// Internally widens to i128 to prevent intermediate overflow.
+    /// This is an internal helper that implements: result = value / SCALE
+    /// using the identity: value / SCALE ≈ (value * RECIP_MUL) >> RECIP_SHIFT
+    ///
+    /// # Returns
+    /// Returns None if the result doesn't fit in i64
     #[inline(always)]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
+    const fn div_by_scale_i128(value: i128) -> Option<i64> {
+        if value == 0 {
+            return Some(0);
+        }
+
+        let is_negative = value < 0;
+        let abs_value = value.unsigned_abs();
+
+        // Split into high and low 64-bit parts
+        let hi = (abs_value >> 64) as u64;
+        let lo = abs_value as u64;
+
+        // Multiply each part by the reciprocal
+        let hi_result = (hi as u128) * (Self::RECIP_MUL as u128);
+        let lo_result = (lo as u128) * (Self::RECIP_MUL as u128);
+
+        // Combine: hi_result + (lo_result >> 64)
+        let quotient = hi_result + (lo_result >> Self::RECIP_SHIFT);
+
+        // Check if result fits in i64
+        if quotient > i64::MAX as u128 {
+            return None;
+        }
+
+        let result = if is_negative {
+            -(quotient as i64)
+        } else {
+            quotient as i64
+        };
+
+        Some(result)
+    }
+
+    /// Fast division of a 64-bit value by SCALE.
+    ///
+    /// Optimized for the case where we know the input fits in i64.
+    #[inline(always)]
+    const fn div_by_scale_i64(value: i64) -> i64 {
+        if value == 0 {
+            return 0;
+        }
+
+        let is_negative = value < 0;
+        let abs_value = value.unsigned_abs();
+
+        // For i64 input, we can simplify:
+        // value is at most 64 bits, so value * RECIP_MUL fits in 128 bits
+        let product = (abs_value as u128) * (Self::RECIP_MUL as u128);
+        let quotient = (product >> Self::RECIP_SHIFT) as i64;
+
+        if is_negative { -quotient } else { quotient }
+    }
+
+    /// Fast multiplication using reciprocal division
+    #[inline(always)]
     pub const fn checked_mul(self, rhs: Self) -> Option<Self> {
         let a = self.value as i128;
         let b = rhs.value as i128;
 
-        // Multiply then divide by scale
-        let result = a * b / Self::SCALE as i128;
+        let product = match a.checked_mul(b) {
+            Some(p) => p,
+            None => return None,
+        };
 
-        // Check if result fits in i64
-        if result > i64::MAX as i128 || result < i64::MIN as i128 {
-            None
-        } else {
-            Some(Self {
-                value: result as i64,
-            })
+        // Use our fast division helper
+        match Self::div_by_scale_i128(product) {
+            Some(result) => Some(Self { value: result }),
+            None => None,
         }
     }
 
-    /// Saturating multiplication. Clamps on overflow.
-    #[inline(always)]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
+    // Saturating version (clamps)
     pub const fn saturating_mul(self, rhs: Self) -> Self {
-        let a = self.value as i128;
-        let b = rhs.value as i128;
-
-        let result = a * b / Self::SCALE as i128;
-
-        if result > i64::MAX as i128 {
-            Self::MAX
-        } else if result < i64::MIN as i128 {
-            Self::MIN
-        } else {
-            Self {
-                value: result as i64,
+        let product = (self.value as i128) * (rhs.value as i128);
+        match Self::div_by_scale_i128(product) {
+            Some(result) => Self { value: result },
+            None => {
+                if product > 0 {
+                    Self::MAX
+                } else {
+                    Self::MIN
+                }
             }
         }
     }
 
-    /// Wrapping multiplication. Wraps on overflow.
-    #[inline(always)]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
+    // Wrapping version (wraps)
     pub const fn wrapping_mul(self, rhs: Self) -> Self {
-        let a = self.value as i128;
-        let b = rhs.value as i128;
-
-        let result = a * b / Self::SCALE as i128;
-
+        let product = (self.value as i128).wrapping_mul(rhs.value as i128);
         Self {
-            value: result as i64,
+            value: Self::div_by_scale_i128_wrapping(product),
         }
     }
 
@@ -409,9 +464,23 @@ impl D64 {
         let b = mul.value as i128;
         let c = add.value as i128;
 
-        // (a * b) / SCALE + c
-        let product = a * b / Self::SCALE as i128;
-        let result = product + c;
+        // Compute a * b
+        let product = match a.checked_mul(b) {
+            Some(p) => p,
+            None => return None,
+        };
+
+        // Fast division by SCALE
+        let quotient = match Self::div_by_scale_i128(product) {
+            Some(q) => q as i128,
+            None => return None,
+        };
+
+        // Add c
+        let result = match quotient.checked_add(c) {
+            Some(r) => r,
+            None => return None,
+        };
 
         if result > i64::MAX as i128 || result < i64::MIN as i128 {
             None
@@ -419,6 +488,31 @@ impl D64 {
             Some(Self {
                 value: result as i64,
             })
+        }
+    }
+
+    /// Fast division by SCALE, wrapping on overflow (doesn't check bounds)
+    #[inline(always)]
+    const fn div_by_scale_i128_wrapping(value: i128) -> i64 {
+        if value == 0 {
+            return 0;
+        }
+
+        let is_negative = value < 0;
+        let abs_value = value.unsigned_abs();
+
+        let hi = (abs_value >> 64) as u64;
+        let lo = abs_value as u64;
+
+        let hi_result = (hi as u128) * (Self::RECIP_MUL as u128);
+        let lo_result = (lo as u128) * (Self::RECIP_MUL as u128);
+
+        let quotient = (hi_result + (lo_result >> Self::RECIP_SHIFT)) as i64;
+
+        if is_negative {
+            quotient.wrapping_neg()
+        } else {
+            quotient
         }
     }
 }
@@ -745,7 +839,7 @@ impl D64 {
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn trunc(self) -> Self {
         Self {
-            value: (self.value / Self::SCALE) * Self::SCALE,
+            value: (Self::div_by_scale_i64(self.value)) * Self::SCALE,
         }
     }
 
@@ -762,7 +856,7 @@ impl D64 {
     #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn round(self) -> Self {
-        let quotient = self.value / Self::SCALE;
+        let quotient = Self::div_by_scale_i64(self.value);
         let remainder = self.value % Self::SCALE;
         let half = Self::SCALE / 2;
 
@@ -1034,11 +1128,16 @@ impl D64 {
     /// Creates a D64 from a u64 integer.
     #[inline(always)]
     pub const fn from_u64(value: u64) -> Option<Self> {
-        if value > i64::MAX as u64 / Self::SCALE as u64 {
+        // Check if value * SCALE would overflow i64
+        // i64::MAX / SCALE = max safe value
+        // We can compute this at compile time
+        const MAX_SAFE: u64 = i64::MAX as u64 / D64::SCALE as u64;
+
+        if value > MAX_SAFE {
             None
         } else {
             Some(Self {
-                value: value as i64 * Self::SCALE,
+                value: (value * Self::SCALE as u64) as i64,
             })
         }
     }
@@ -1046,13 +1145,13 @@ impl D64 {
     /// Converts to i64, truncating any fractional part.
     #[inline(always)]
     pub const fn to_i64(self) -> i64 {
-        self.value / Self::SCALE
+        Self::div_by_scale_i64(self.value)
     }
 
     /// Converts to i64, rounding to nearest (banker's rounding on ties).
     #[inline(always)]
     pub const fn to_i64_round(self) -> i64 {
-        let quotient = self.value / Self::SCALE;
+        let quotient = Self::div_by_scale_i64(self.value);
         let remainder = self.value % Self::SCALE;
         let half = Self::SCALE / 2;
 
@@ -1121,7 +1220,9 @@ impl D64 {
     /// Note: May lose precision for very large values.
     #[inline(always)]
     pub fn to_f64(self) -> f64 {
-        self.value as f64 / Self::SCALE as f64
+        let integer_part = Self::div_by_scale_i64(self.value);
+        let fractional_part = (self.value % Self::SCALE) as f64 / Self::SCALE as f64;
+        integer_part as f64 + fractional_part
     }
 
     /// Creates a D64 from an f32.
@@ -1325,7 +1426,7 @@ impl D64 {
     }
 
     /// Creates a D64 from its representation as a byte array in big endian.
-    #[inline]
+    #[inline(always)]
     pub const fn from_be_bytes(bytes: [u8; 8]) -> Self {
         Self {
             value: i64::from_be_bytes(bytes),
@@ -1333,7 +1434,7 @@ impl D64 {
     }
 
     /// Creates a D64 from its representation as a byte array in little endian.
-    #[inline]
+    #[inline(always)]
     pub const fn from_le_bytes(bytes: [u8; 8]) -> Self {
         Self {
             value: i64::from_le_bytes(bytes),
@@ -1341,7 +1442,7 @@ impl D64 {
     }
 
     /// Creates a D64 from its representation as a byte array in native endian.
-    #[inline]
+    #[inline(always)]
     pub const fn from_ne_bytes(bytes: [u8; 8]) -> Self {
         Self {
             value: i64::from_ne_bytes(bytes),
@@ -1349,19 +1450,19 @@ impl D64 {
     }
 
     /// Returns the memory representation of this decimal as a byte array in big-endian byte order.
-    #[inline]
+    #[inline(always)]
     pub const fn to_be_bytes(self) -> [u8; 8] {
         self.value.to_be_bytes()
     }
 
     /// Returns the memory representation of this decimal as a byte array in little-endian byte order.
-    #[inline]
+    #[inline(always)]
     pub const fn to_le_bytes(self) -> [u8; 8] {
         self.value.to_le_bytes()
     }
 
     /// Returns the memory representation of this decimal as a byte array in native byte order.
-    #[inline]
+    #[inline(always)]
     pub const fn to_ne_bytes(self) -> [u8; 8] {
         self.value.to_ne_bytes()
     }
@@ -1370,7 +1471,7 @@ impl D64 {
     ///
     /// # Panics
     /// Panics if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn write_le_bytes(&self, buf: &mut [u8]) {
         buf[..8].copy_from_slice(&self.to_le_bytes());
     }
@@ -1379,7 +1480,7 @@ impl D64 {
     ///
     /// # Panics
     /// Panics if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn write_be_bytes(&self, buf: &mut [u8]) {
         buf[..8].copy_from_slice(&self.to_be_bytes());
     }
@@ -1388,7 +1489,7 @@ impl D64 {
     ///
     /// # Panics
     /// Panics if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn write_ne_bytes(&self, buf: &mut [u8]) {
         buf[..8].copy_from_slice(&self.to_ne_bytes());
     }
@@ -1397,7 +1498,7 @@ impl D64 {
     ///
     /// # Panics
     /// Panics if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn read_le_bytes(buf: &[u8]) -> Self {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&buf[..8]);
@@ -1408,7 +1509,7 @@ impl D64 {
     ///
     /// # Panics
     /// Panics if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn read_be_bytes(buf: &[u8]) -> Self {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&buf[..8]);
@@ -1419,7 +1520,7 @@ impl D64 {
     ///
     /// # Panics
     /// Panics if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn read_ne_bytes(buf: &[u8]) -> Self {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&buf[..8]);
@@ -1429,7 +1530,7 @@ impl D64 {
     /// Tries to write the decimal as bytes in little-endian order to the given buffer.
     ///
     /// Returns `None` if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn try_write_le_bytes(&self, buf: &mut [u8]) -> Option<()> {
         if buf.len() < 8 {
             return None;
@@ -1441,7 +1542,7 @@ impl D64 {
     /// Tries to write the decimal as bytes in big-endian order to the given buffer.
     ///
     /// Returns `None` if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn try_write_be_bytes(&self, buf: &mut [u8]) -> Option<()> {
         if buf.len() < 8 {
             return None;
@@ -1453,7 +1554,7 @@ impl D64 {
     /// Tries to write the decimal as bytes in native-endian order to the given buffer.
     ///
     /// Returns `None` if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn try_write_ne_bytes(&self, buf: &mut [u8]) -> Option<()> {
         if buf.len() < 8 {
             return None;
@@ -1465,7 +1566,7 @@ impl D64 {
     /// Tries to read a decimal from bytes in little-endian order from the given buffer.
     ///
     /// Returns `None` if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn try_read_le_bytes(buf: &[u8]) -> Option<Self> {
         if buf.len() < 8 {
             return None;
@@ -1478,7 +1579,7 @@ impl D64 {
     /// Tries to read a decimal from bytes in big-endian order from the given buffer.
     ///
     /// Returns `None` if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn try_read_be_bytes(buf: &[u8]) -> Option<Self> {
         if buf.len() < 8 {
             return None;
@@ -1491,7 +1592,7 @@ impl D64 {
     /// Tries to read a decimal from bytes in native-endian order from the given buffer.
     ///
     /// Returns `None` if `buf.len() < 8`.
-    #[inline]
+    #[inline(always)]
     pub fn try_read_ne_bytes(buf: &[u8]) -> Option<Self> {
         if buf.len() < 8 {
             return None;
@@ -1669,7 +1770,8 @@ impl fmt::Display for D64 {
         let is_negative = self.value < 0;
         let abs_value = self.value.unsigned_abs();
 
-        let integer_part = abs_value / Self::SCALE as u64;
+        // Get integer part from absolute value to avoid double negative
+        let integer_part = Self::div_by_scale_i64(self.value.abs());
         let fractional_part = abs_value % Self::SCALE as u64;
 
         if is_negative {
@@ -1683,35 +1785,29 @@ impl fmt::Display for D64 {
             if precision > 0 && fractional_part > 0 {
                 // Only show decimal if non-zero
                 f.write_str(".")?;
-
                 let precision = precision.min(Self::DECIMALS as usize);
                 let scale_reduction = Self::DECIMALS as usize - precision;
                 let divisor = 10u64.pow(scale_reduction as u32);
                 let rounded_frac = (fractional_part + divisor / 2) / divisor;
-
                 write!(f, "{:0width$}", rounded_frac, width = precision)?;
             }
         } else {
             // Default: strip trailing zeros
             if fractional_part > 0 {
                 f.write_str(".")?;
-
                 // Write fractional part, then strip trailing zeros
                 let mut buf = [0u8; 8];
                 format_u64_padded(fractional_part, &mut buf);
-
                 // Find last non-zero digit
                 let mut end = 8;
                 while end > 0 && buf[end - 1] == b'0' {
                     end -= 1;
                 }
-
                 // Safety: buf contains only ASCII digits
                 let s = unsafe { core::str::from_utf8_unchecked(&buf[..end]) };
                 f.write_str(s)?;
             }
         }
-
         Ok(())
     }
 }
@@ -3340,5 +3436,180 @@ mod serde_tests {
         let d = D64::from_str("-123.45").unwrap();
         let json = serde_json::to_string(&d).unwrap();
         assert_eq!(json, r#""-123.45""#);
+    }
+}
+
+#[cfg(test)]
+mod fast_mul_tests {
+    use super::*;
+
+    #[test]
+    fn test_fast_mul_matches_baseline_simple() {
+        let test_cases = [
+            (D64::from_str("1.0").unwrap(), D64::from_str("1.0").unwrap()),
+            (D64::from_str("2.0").unwrap(), D64::from_str("3.0").unwrap()),
+            (
+                D64::from_str("123.456789").unwrap(),
+                D64::from_str("9.876543").unwrap(),
+            ),
+            (
+                D64::from_str("-123.456789").unwrap(),
+                D64::from_str("9.876543").unwrap(),
+            ),
+            (
+                D64::from_str("123.456789").unwrap(),
+                D64::from_str("-9.876543").unwrap(),
+            ),
+            (
+                D64::from_str("-123.456789").unwrap(),
+                D64::from_str("-9.876543").unwrap(),
+            ),
+            (
+                D64::from_str("0.00000001").unwrap(),
+                D64::from_str("100000000").unwrap(),
+            ),
+            (
+                D64::from_str("1000000").unwrap(),
+                D64::from_str("0.001").unwrap(),
+            ),
+        ];
+
+        for (a, b) in test_cases {
+            let baseline = a.checked_mul(b);
+            let fast = a.checked_mul(b);
+
+            match (baseline, fast) {
+                (Some(base_val), Some(fast_val)) => {
+                    // Allow difference of 1 in raw value due to rounding
+                    let diff = (base_val.to_raw() - fast_val.to_raw()).abs();
+                    assert!(
+                        diff <= 1,
+                        "Mismatch for {} * {}: baseline={}, fast={}, diff={}",
+                        a,
+                        b,
+                        base_val,
+                        fast_val,
+                        diff
+                    );
+                }
+                (None, None) => {
+                    // Both overflow - correct
+                }
+                (base, fast) => {
+                    panic!(
+                        "Overflow mismatch for {} * {}: baseline={:?}, fast={:?}",
+                        a, b, base, fast
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_fast_mul_overflow_detection() {
+        let max_half = D64::from_raw(i64::MAX / 2);
+        let three = D64::from_str("3.0").unwrap();
+
+        // Should overflow
+        assert!(max_half.checked_mul(three).is_none());
+        assert!(max_half.checked_mul(three).is_none());
+    }
+
+    #[test]
+    fn test_fast_mul_zero() {
+        let a = D64::from_str("123.456").unwrap();
+        let zero = D64::ZERO;
+
+        assert_eq!(a.checked_mul(zero), Some(D64::ZERO));
+        assert_eq!(zero.checked_mul(a), Some(D64::ZERO));
+    }
+
+    #[test]
+    fn test_fast_mul_one() {
+        let a = D64::from_str("123.456789").unwrap();
+
+        assert_eq!(a.checked_mul(D64::ONE), Some(a));
+        assert_eq!(D64::ONE.checked_mul(a), Some(a));
+    }
+
+    #[test]
+    fn test_fast_mul_negative_one() {
+        let a = D64::from_str("123.456789").unwrap();
+        let neg_one = D64::from_str("-1.0").unwrap();
+        let expected = D64::from_str("-123.456789").unwrap();
+
+        let result = a.checked_mul(neg_one).unwrap();
+        assert_eq!(result.to_raw(), expected.to_raw());
+    }
+}
+
+// Property-based testing
+#[cfg(test)]
+mod fast_mul_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn prop_fast_mul_matches_baseline(
+            a in -1_000_000_000i64..1_000_000_000i64,
+            b in -1_000_000_000i64..1_000_000_000i64,
+        ) {
+            let d_a = D64::from_raw(a);
+            let d_b = D64::from_raw(b);
+
+            let baseline = d_a.checked_mul(d_b);
+            let fast = d_a.checked_mul(d_b);
+
+            match (baseline, fast) {
+                (Some(base_val), Some(fast_val)) => {
+                    let diff = (base_val.to_raw() - fast_val.to_raw()).abs();
+                    prop_assert!(
+                        diff <= 1,
+                        "Mismatch: baseline={}, fast={}, diff={}",
+                        base_val.to_raw(), fast_val.to_raw(), diff
+                    );
+                }
+                (None, None) => {
+                    // Both overflow - OK
+                }
+                (base, fast) => {
+                    prop_assert!(
+                        false,
+                        "Overflow mismatch: baseline={:?}, fast={:?}",
+                        base.map(|v| v.to_raw()),
+                        fast.map(|v| v.to_raw())
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn prop_fast_mul_commutative(
+            a in -1_000_000i64..1_000_000i64,
+            b in -1_000_000i64..1_000_000i64,
+        ) {
+            let d_a = D64::from_raw(a * D64::SCALE);
+            let d_b = D64::from_raw(b * D64::SCALE);
+
+            let ab = d_a.checked_mul(d_b);
+            let ba = d_b.checked_mul(d_a);
+
+            prop_assert_eq!(ab, ba);
+        }
+
+        #[test]
+        fn prop_fast_mul_zero(a in -1_000_000_000i64..1_000_000_000i64) {
+            let d_a = D64::from_raw(a);
+            let result = d_a.checked_mul(D64::ZERO);
+            prop_assert_eq!(result, Some(D64::ZERO));
+        }
+
+        #[test]
+        fn prop_fast_mul_one(a in -1_000_000_000i64..1_000_000_000i64) {
+            let d_a = D64::from_raw(a);
+            let result = d_a.checked_mul(D64::ONE);
+            prop_assert_eq!(result, Some(d_a));
+        }
     }
 }

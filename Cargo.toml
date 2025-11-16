@@ -17,6 +17,7 @@ full = ["std", "serde"]
 [dev-dependencies]
 criterion = { version = "0.7.0", features = ["html_reports"] }
 rust_decimal = { version = "1.39.0", features = ["maths", "serde"] }
+proptest = "1.9.0"
 serde = "1.0.228"
 serde_json = "1.0.145"
 bincode = "1.3"

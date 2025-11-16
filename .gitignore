@@ -25,3 +25,5 @@ Cargo.lock
 # Added by cargo
 
 /target
+
+proptest*
