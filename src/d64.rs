@@ -149,21 +149,78 @@ impl D64 {
 // ============================================================================
 // Constructors and Raw Access
 // ============================================================================
+impl Default for D64 {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
 
 impl D64 {
     /// Creates a new D64 from a raw scaled value.
     ///
     /// # Safety
     /// The caller must ensure the value is properly scaled by 10^8.
-    #[inline]
+    #[inline(always)]
     pub const fn from_raw(value: i64) -> Self {
         Self { value }
     }
 
     /// Returns the raw internal value (scaled by 10^8).
-    #[inline]
+    #[inline(always)]
     pub const fn to_raw(self) -> i64 {
         self.value
+    }
+
+    /// Creates a D64 from integer and fractional parts at compile time
+    /// Example: `new(123, 45_000_000)` → 123.45
+    ///
+    /// The fractional part should always be positive.
+    /// For negative numbers, use a negative integer part:
+    /// `new(-123, 45_000_000)` → -123.45
+    ///
+    /// # Panics
+    /// Panics if the value would overflow i64 range.
+    pub const fn new(integer: i64, fractional: i64) -> Self {
+        let scaled = match integer.checked_mul(Self::SCALE) {
+            Some(v) => v,
+            None => panic!("overflow in D64::new: integer part too large"),
+        };
+
+        let value = if integer >= 0 {
+            match scaled.checked_add(fractional) {
+                Some(v) => v,
+                None => panic!("overflow in D64::new: result too large"),
+            }
+        } else {
+            match scaled.checked_sub(fractional) {
+                Some(v) => v,
+                None => panic!("overflow in D64::new: result too large"),
+            }
+        };
+
+        Self { value }
+    }
+
+    /// Create from basis points (1 bp = 0.0001)
+    /// Example: `from_basis_points(100)` → 0.01 (1%)
+    pub const fn from_basis_points(bps: i64) -> Option<Self> {
+        // 1 bp = 0.0001 = SCALE / 10_000
+        // So bps basis points = (bps * SCALE) / 10_000
+        let numerator = match bps.checked_mul(Self::SCALE) {
+            Some(v) => v,
+            None => return None,
+        };
+
+        Some(Self {
+            value: numerator / 10_000,
+        })
+    }
+
+    /// Convert to basis points
+    /// Example: `D64::from_str("0.01").unwrap().to_basis_points()` → 100
+    pub const fn to_basis_points(self) -> i64 {
+        // Reverse: (value * 10_000) / SCALE
+        self.value * 10_000 / Self::SCALE
     }
 }
 
@@ -173,7 +230,7 @@ impl D64 {
 
 impl D64 {
     /// Checked addition. Returns `None` if overflow occurred.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn checked_add(self, rhs: Self) -> Option<Self> {
         if let Some(result) = self.value.checked_add(rhs.value) {
@@ -184,7 +241,7 @@ impl D64 {
     }
 
     /// Saturating addition. Clamps on overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn saturating_add(self, rhs: Self) -> Self {
         Self {
@@ -193,7 +250,7 @@ impl D64 {
     }
 
     /// Wrapping addition. Wraps on overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn wrapping_add(self, rhs: Self) -> Self {
         Self {
@@ -202,7 +259,7 @@ impl D64 {
     }
 
     /// Checked addition. Returns an error if overflow occurred.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn try_add(self, rhs: Self) -> crate::Result<Self> {
         match self.checked_add(rhs) {
@@ -218,7 +275,7 @@ impl D64 {
 
 impl D64 {
     /// Checked subtraction. Returns `None` if overflow occurred.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn checked_sub(self, rhs: Self) -> Option<Self> {
         if let Some(result) = self.value.checked_sub(rhs.value) {
@@ -229,7 +286,7 @@ impl D64 {
     }
 
     /// Saturating subtraction. Clamps on overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn saturating_sub(self, rhs: Self) -> Self {
         Self {
@@ -238,7 +295,7 @@ impl D64 {
     }
 
     /// Wrapping subtraction. Wraps on overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn wrapping_sub(self, rhs: Self) -> Self {
         Self {
@@ -247,7 +304,7 @@ impl D64 {
     }
 
     /// Checked subtraction. Returns an error if overflow occurred.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn try_sub(self, rhs: Self) -> crate::Result<Self> {
         match self.checked_sub(rhs) {
@@ -265,7 +322,7 @@ impl D64 {
     /// Checked multiplication. Returns `None` if overflow occurred.
     ///
     /// Internally widens to i128 to prevent intermediate overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn checked_mul(self, rhs: Self) -> Option<Self> {
         let a = self.value as i128;
@@ -285,7 +342,7 @@ impl D64 {
     }
 
     /// Saturating multiplication. Clamps on overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn saturating_mul(self, rhs: Self) -> Self {
         let a = self.value as i128;
@@ -305,7 +362,7 @@ impl D64 {
     }
 
     /// Wrapping multiplication. Wraps on overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn wrapping_mul(self, rhs: Self) -> Self {
         let a = self.value as i128;
@@ -319,12 +376,48 @@ impl D64 {
     }
 
     /// Checked multiplication. Returns an error if overflow occurred.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn try_mul(self, rhs: Self) -> crate::Result<Self> {
         match self.checked_mul(rhs) {
             Some(result) => Ok(result),
             None => Err(DecimalError::Overflow),
+        }
+    }
+
+    /// Multiply by an integer (faster than general multiplication)
+    /// Useful for: quantity * price, shares * rate, etc.
+    pub const fn mul_i64(self, rhs: i64) -> Option<Self> {
+        match self.value.checked_mul(rhs) {
+            Some(result) => Some(Self { value: result }),
+            None => None,
+        }
+    }
+
+    pub const fn try_mul_i64(self, rhs: i64) -> crate::Result<Self> {
+        match self.mul_i64(rhs) {
+            Some(v) => Ok(v),
+            None => Err(DecimalError::Overflow),
+        }
+    }
+
+    /// Computes (self * mul) + add with only one rounding step
+    /// More accurate and faster than separate mul + add
+    pub const fn mul_add(self, mul: Self, add: Self) -> Option<Self> {
+        let a = self.value as i128;
+        let b = mul.value as i128;
+        let c = add.value as i128;
+
+        // (a * b) / SCALE + c
+        let product = a * b / Self::SCALE as i128;
+        let result = product + c;
+
+        if result > i64::MAX as i128 || result < i64::MIN as i128 {
+            None
+        } else {
+            Some(Self {
+                value: result as i64,
+            })
         }
     }
 }
@@ -337,7 +430,7 @@ impl D64 {
     /// Checked division. Returns `None` if `rhs` is zero or overflow occurred.
     ///
     /// Internally widens to i128 to maintain precision.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn checked_div(self, rhs: Self) -> Option<Self> {
         if rhs.value == 0 {
@@ -361,7 +454,7 @@ impl D64 {
     }
 
     /// Saturating division. Clamps on overflow. Returns zero if `rhs` is zero.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn saturating_div(self, rhs: Self) -> Self {
         if rhs.value == 0 {
@@ -385,7 +478,7 @@ impl D64 {
     }
 
     /// Wrapping division. Wraps on overflow. Returns zero if `rhs` is zero.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn wrapping_div(self, rhs: Self) -> Self {
         if rhs.value == 0 {
@@ -403,7 +496,7 @@ impl D64 {
     }
 
     /// Checked division. Returns an error if `rhs` is zero or overflow occurred.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn try_div(self, rhs: Self) -> crate::Result<Self> {
         if rhs.value == 0 {
@@ -422,7 +515,7 @@ impl D64 {
 
 impl D64 {
     /// Checked negation. Returns `None` if the result would overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn checked_neg(self) -> Option<Self> {
         if let Some(result) = self.value.checked_neg() {
@@ -433,7 +526,7 @@ impl D64 {
     }
 
     /// Saturating negation. Clamps on overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn saturating_neg(self) -> Self {
         Self {
@@ -442,7 +535,7 @@ impl D64 {
     }
 
     /// Wrapping negation. Wraps on overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn wrapping_neg(self) -> Self {
         Self {
@@ -451,7 +544,7 @@ impl D64 {
     }
 
     /// Checked negation. Returns an error if overflow occurred.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn try_neg(self) -> crate::Result<Self> {
         match self.checked_neg() {
@@ -467,7 +560,7 @@ impl D64 {
 
 impl D64 {
     /// Returns the absolute value of `self`.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn abs(self) -> Self {
         Self {
@@ -480,7 +573,7 @@ impl D64 {
     }
 
     /// Checked absolute value. Returns `None` if the result would overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn checked_abs(self) -> Option<Self> {
         if self.value == i64::MIN {
@@ -491,7 +584,7 @@ impl D64 {
     }
 
     /// Saturating absolute value. Clamps on overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn saturating_abs(self) -> Self {
         if self.value == i64::MIN {
@@ -502,7 +595,7 @@ impl D64 {
     }
 
     /// Wrapping absolute value. Wraps on overflow.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn wrapping_abs(self) -> Self {
         Self {
@@ -511,7 +604,7 @@ impl D64 {
     }
 
     /// Checked absolute value. Returns an error if overflow occurred.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn try_abs(self) -> crate::Result<Self> {
         match self.checked_abs() {
@@ -527,25 +620,25 @@ impl D64 {
 
 impl D64 {
     /// Returns `true` if `self` is positive.
-    #[inline]
+    #[inline(always)]
     pub const fn is_positive(self) -> bool {
         self.value > 0
     }
 
     /// Returns `true` if `self` is negative.
-    #[inline]
+    #[inline(always)]
     pub const fn is_negative(self) -> bool {
         self.value < 0
     }
 
     /// Returns `true` if `self` is zero.
-    #[inline]
+    #[inline(always)]
     pub const fn is_zero(self) -> bool {
         self.value == 0
     }
 
     /// Returns the sign of `self` as -1, 0, or 1.
-    #[inline]
+    #[inline(always)]
     pub const fn signum(self) -> i32 {
         if self.value > 0 {
             1
@@ -563,7 +656,7 @@ impl D64 {
 
 impl D64 {
     /// Returns the minimum of two values.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn min(self, other: Self) -> Self {
         if self.value < other.value {
@@ -574,7 +667,7 @@ impl D64 {
     }
 
     /// Returns the maximum of two values.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn max(self, other: Self) -> Self {
         if self.value > other.value {
@@ -592,7 +685,7 @@ impl D64 {
     /// # Panics
     ///
     /// Panics if `min > max`.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn clamp(self, min: Self, max: Self) -> Self {
         assert!(
@@ -615,7 +708,7 @@ impl D64 {
 
 impl D64 {
     /// Returns the largest integer less than or equal to `self`.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn floor(self) -> Self {
         let remainder = self.value % Self::SCALE;
@@ -631,7 +724,7 @@ impl D64 {
     }
 
     /// Returns the smallest integer greater than or equal to `self`.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn ceil(self) -> Self {
         let remainder = self.value % Self::SCALE;
@@ -647,7 +740,7 @@ impl D64 {
     }
 
     /// Returns the integer part of `self`, truncating any fractional part.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn trunc(self) -> Self {
         Self {
@@ -656,7 +749,7 @@ impl D64 {
     }
 
     /// Returns the fractional part of `self`.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn fract(self) -> Self {
         Self {
@@ -665,7 +758,7 @@ impl D64 {
     }
 
     /// Rounds to the nearest integer, using banker's rounding (round half to even).
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn round(self) -> Self {
         let quotient = self.value / Self::SCALE;
@@ -706,7 +799,7 @@ impl D64 {
     ///
     /// # Panics
     /// Panics if `decimal_places > Self::DECIMALS`
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn round_dp(self, decimal_places: u8) -> Self {
         assert!(
@@ -762,7 +855,7 @@ impl D64 {
     /// Returns the reciprocal (multiplicative inverse) of `self`.
     ///
     /// Returns `None` if `self` is zero.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn recip(self) -> Option<Self> {
         if self.value == 0 {
@@ -773,7 +866,7 @@ impl D64 {
     }
 
     /// Checked reciprocal. Returns an error if `self` is zero.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn try_recip(self) -> crate::Result<Self> {
         match self.recip() {
@@ -827,7 +920,7 @@ impl D64 {
     }
 
     /// Checked integer power. Returns an error if overflow occurred.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn try_powi(self, exp: i32) -> crate::Result<Self> {
         match self.powi(exp) {
@@ -896,7 +989,7 @@ impl D64 {
     }
 
     /// Checked square root. Returns an error if `self` is negative.
-    #[inline]
+    #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn try_sqrt(self) -> crate::Result<Self> {
         match self.sqrt() {
@@ -912,7 +1005,7 @@ impl D64 {
 
 impl D64 {
     /// Creates a D64 from an i64 integer.
-    #[inline]
+    #[inline(always)]
     pub const fn from_i64(value: i64) -> Option<Self> {
         // Check if multiplication would overflow
         match value.checked_mul(Self::SCALE) {
@@ -922,7 +1015,7 @@ impl D64 {
     }
 
     /// Creates a D64 from an i32 integer (always succeeds).
-    #[inline]
+    #[inline(always)]
     pub const fn from_i32(value: i32) -> Self {
         Self {
             value: value as i64 * Self::SCALE,
@@ -930,7 +1023,7 @@ impl D64 {
     }
 
     /// Creates a D64 from a u32 integer (always succeeds).
-    #[inline]
+    #[inline(always)]
     pub const fn from_u32(value: u32) -> Self {
         Self {
             value: value as i64 * Self::SCALE,
@@ -938,7 +1031,7 @@ impl D64 {
     }
 
     /// Creates a D64 from a u64 integer.
-    #[inline]
+    #[inline(always)]
     pub const fn from_u64(value: u64) -> Option<Self> {
         if value > i64::MAX as u64 / Self::SCALE as u64 {
             None
@@ -950,13 +1043,13 @@ impl D64 {
     }
 
     /// Converts to i64, truncating any fractional part.
-    #[inline]
+    #[inline(always)]
     pub const fn to_i64(self) -> i64 {
         self.value / Self::SCALE
     }
 
     /// Converts to i64, rounding to nearest (banker's rounding on ties).
-    #[inline]
+    #[inline(always)]
     pub const fn to_i64_round(self) -> i64 {
         let quotient = self.value / Self::SCALE;
         let remainder = self.value % Self::SCALE;
@@ -979,7 +1072,7 @@ impl D64 {
     }
 
     /// Creates a D64 from an i64, returning an error on overflow.
-    #[inline]
+    #[inline(always)]
     pub const fn try_from_i64(value: i64) -> crate::Result<Self> {
         match Self::from_i64(value) {
             Some(v) => Ok(v),
@@ -988,7 +1081,7 @@ impl D64 {
     }
 
     /// Creates a D64 from a u64, returning an error on overflow.
-    #[inline]
+    #[inline(always)]
     pub const fn try_from_u64(value: u64) -> crate::Result<Self> {
         match Self::from_u64(value) {
             Some(v) => Ok(v),
@@ -1005,7 +1098,7 @@ impl D64 {
     /// Creates a D64 from an f64.
     ///
     /// Returns `None` if the value is NaN, infinite, or out of range.
-    #[inline]
+    #[inline(always)]
     pub fn from_f64(value: f64) -> Option<Self> {
         if !value.is_finite() {
             return None;
@@ -1025,13 +1118,13 @@ impl D64 {
     /// Converts to f64.
     ///
     /// Note: May lose precision for very large values.
-    #[inline]
+    #[inline(always)]
     pub fn to_f64(self) -> f64 {
         self.value as f64 / Self::SCALE as f64
     }
 
     /// Creates a D64 from an f32.
-    #[inline]
+    #[inline(always)]
     pub fn from_f32(value: f32) -> Option<Self> {
         Self::from_f64(value as f64)
     }
@@ -1039,13 +1132,13 @@ impl D64 {
     /// Converts to f32.
     ///
     /// Note: May lose precision.
-    #[inline]
+    #[inline(always)]
     pub fn to_f32(self) -> f32 {
         self.to_f64() as f32
     }
 
     /// Creates a D64 from an f64, returning an error if invalid.
-    #[inline]
+    #[inline(always)]
     pub fn try_from_f64(value: f64) -> crate::Result<Self> {
         if value.is_nan() || value.is_infinite() {
             return Err(DecimalError::InvalidFormat);
@@ -1063,6 +1156,26 @@ impl D64 {
         Ok(Self {
             value: scaled.round() as i64,
         })
+    }
+}
+
+// ============================================================================
+// Percentage Calculations
+// ============================================================================
+impl D64 {
+    /// Calculate percentage: self * (percent / 100)
+    /// Example: 1000.percent_of(5) → 50 (5% of 1000)
+    #[inline(always)]
+    pub fn percent_of(self, percent: Self) -> Option<Self> {
+        self.checked_mul(percent)?.checked_div(Self::HUNDRED)
+    }
+
+    /// Add percentage: self * (1 + percent/100)
+    /// Example: 1000.add_percent(5) → 1050 (add 5%)
+    #[inline(always)]
+    pub fn add_percent(self, percent: Self) -> Option<Self> {
+        let multiplier = Self::HUNDRED.checked_add(percent)?;
+        self.checked_mul(multiplier)?.checked_div(Self::HUNDRED)
     }
 }
 
@@ -1168,6 +1281,25 @@ impl D64 {
 
         Ok(Self { value })
     }
+
+    /// Parse assuming a fixed number of decimals (no decimal point in string)
+    /// E.g., parse_fixed_point_str("12345", 2) → 123.45
+    pub fn from_fixed_point_str(s: &str, decimals: u8) -> crate::Result<Self> {
+        let value = s.parse::<i64>().map_err(|_| DecimalError::InvalidFormat)?;
+
+        if decimals > Self::DECIMALS {
+            return Err(DecimalError::PrecisionLoss);
+        }
+
+        let scale_diff = Self::DECIMALS - decimals;
+        let multiplier = const_pow10(scale_diff);
+
+        let scaled = value
+            .checked_mul(multiplier)
+            .ok_or(DecimalError::Overflow)?;
+
+        Ok(Self { value: scaled })
+    }
 }
 
 impl FromStr for D64 {
@@ -1179,13 +1311,204 @@ impl FromStr for D64 {
 }
 
 // ============================================================================
+// Bytes Operations
+// ============================================================================
+impl D64 {
+    /// The size of this type in bytes.
+    pub const BYTES: usize = core::mem::size_of::<i64>();
+
+    /// Parse from byte slice (useful for binary protocols)
+    pub fn from_utf8_bytes(bytes: &[u8]) -> crate::Result<Self> {
+        let s = core::str::from_utf8(bytes).map_err(|_| DecimalError::InvalidFormat)?;
+        Self::from_str(s)
+    }
+
+    /// Creates a D64 from its representation as a byte array in big endian.
+    #[inline]
+    pub const fn from_be_bytes(bytes: [u8; 8]) -> Self {
+        Self {
+            value: i64::from_be_bytes(bytes),
+        }
+    }
+
+    /// Creates a D64 from its representation as a byte array in little endian.
+    #[inline]
+    pub const fn from_le_bytes(bytes: [u8; 8]) -> Self {
+        Self {
+            value: i64::from_le_bytes(bytes),
+        }
+    }
+
+    /// Creates a D64 from its representation as a byte array in native endian.
+    #[inline]
+    pub const fn from_ne_bytes(bytes: [u8; 8]) -> Self {
+        Self {
+            value: i64::from_ne_bytes(bytes),
+        }
+    }
+
+    /// Returns the memory representation of this decimal as a byte array in big-endian byte order.
+    #[inline]
+    pub const fn to_be_bytes(self) -> [u8; 8] {
+        self.value.to_be_bytes()
+    }
+
+    /// Returns the memory representation of this decimal as a byte array in little-endian byte order.
+    #[inline]
+    pub const fn to_le_bytes(self) -> [u8; 8] {
+        self.value.to_le_bytes()
+    }
+
+    /// Returns the memory representation of this decimal as a byte array in native byte order.
+    #[inline]
+    pub const fn to_ne_bytes(self) -> [u8; 8] {
+        self.value.to_ne_bytes()
+    }
+
+    /// Writes the decimal as bytes in little-endian order to the given buffer.
+    ///
+    /// # Panics
+    /// Panics if `buf.len() < 8`.
+    #[inline]
+    pub fn write_le_bytes(&self, buf: &mut [u8]) {
+        buf[..8].copy_from_slice(&self.to_le_bytes());
+    }
+
+    /// Writes the decimal as bytes in big-endian order to the given buffer.
+    ///
+    /// # Panics
+    /// Panics if `buf.len() < 8`.
+    #[inline]
+    pub fn write_be_bytes(&self, buf: &mut [u8]) {
+        buf[..8].copy_from_slice(&self.to_be_bytes());
+    }
+
+    /// Writes the decimal as bytes in native-endian order to the given buffer.
+    ///
+    /// # Panics
+    /// Panics if `buf.len() < 8`.
+    #[inline]
+    pub fn write_ne_bytes(&self, buf: &mut [u8]) {
+        buf[..8].copy_from_slice(&self.to_ne_bytes());
+    }
+
+    /// Reads a decimal from bytes in little-endian order from the given buffer.
+    ///
+    /// # Panics
+    /// Panics if `buf.len() < 8`.
+    #[inline]
+    pub fn read_le_bytes(buf: &[u8]) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&buf[..8]);
+        Self::from_le_bytes(bytes)
+    }
+
+    /// Reads a decimal from bytes in big-endian order from the given buffer.
+    ///
+    /// # Panics
+    /// Panics if `buf.len() < 8`.
+    #[inline]
+    pub fn read_be_bytes(buf: &[u8]) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&buf[..8]);
+        Self::from_be_bytes(bytes)
+    }
+
+    /// Reads a decimal from bytes in native-endian order from the given buffer.
+    ///
+    /// # Panics
+    /// Panics if `buf.len() < 8`.
+    #[inline]
+    pub fn read_ne_bytes(buf: &[u8]) -> Self {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&buf[..8]);
+        Self::from_ne_bytes(bytes)
+    }
+
+    /// Tries to write the decimal as bytes in little-endian order to the given buffer.
+    ///
+    /// Returns `None` if `buf.len() < 8`.
+    #[inline]
+    pub fn try_write_le_bytes(&self, buf: &mut [u8]) -> Option<()> {
+        if buf.len() < 8 {
+            return None;
+        }
+        buf[..8].copy_from_slice(&self.to_le_bytes());
+        Some(())
+    }
+
+    /// Tries to write the decimal as bytes in big-endian order to the given buffer.
+    ///
+    /// Returns `None` if `buf.len() < 8`.
+    #[inline]
+    pub fn try_write_be_bytes(&self, buf: &mut [u8]) -> Option<()> {
+        if buf.len() < 8 {
+            return None;
+        }
+        buf[..8].copy_from_slice(&self.to_be_bytes());
+        Some(())
+    }
+
+    /// Tries to write the decimal as bytes in native-endian order to the given buffer.
+    ///
+    /// Returns `None` if `buf.len() < 8`.
+    #[inline]
+    pub fn try_write_ne_bytes(&self, buf: &mut [u8]) -> Option<()> {
+        if buf.len() < 8 {
+            return None;
+        }
+        buf[..8].copy_from_slice(&self.to_ne_bytes());
+        Some(())
+    }
+
+    /// Tries to read a decimal from bytes in little-endian order from the given buffer.
+    ///
+    /// Returns `None` if `buf.len() < 8`.
+    #[inline]
+    pub fn try_read_le_bytes(buf: &[u8]) -> Option<Self> {
+        if buf.len() < 8 {
+            return None;
+        }
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&buf[..8]);
+        Some(Self::from_le_bytes(bytes))
+    }
+
+    /// Tries to read a decimal from bytes in big-endian order from the given buffer.
+    ///
+    /// Returns `None` if `buf.len() < 8`.
+    #[inline]
+    pub fn try_read_be_bytes(buf: &[u8]) -> Option<Self> {
+        if buf.len() < 8 {
+            return None;
+        }
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&buf[..8]);
+        Some(Self::from_be_bytes(bytes))
+    }
+
+    /// Tries to read a decimal from bytes in native-endian order from the given buffer.
+    ///
+    /// Returns `None` if `buf.len() < 8`.
+    #[inline]
+    pub fn try_read_ne_bytes(buf: &[u8]) -> Option<Self> {
+        if buf.len() < 8 {
+            return None;
+        }
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&buf[..8]);
+        Some(Self::from_ne_bytes(bytes))
+    }
+}
+
+// ============================================================================
 // Operator Overloading
 // ============================================================================
 
 impl Add for D64 {
     type Output = Self;
 
-    #[inline]
+    #[inline(always)]
     fn add(self, rhs: Self) -> Self::Output {
         self.checked_add(rhs).expect("attempt to add with overflow")
     }
@@ -1194,7 +1517,7 @@ impl Add for D64 {
 impl Sub for D64 {
     type Output = Self;
 
-    #[inline]
+    #[inline(always)]
     fn sub(self, rhs: Self) -> Self::Output {
         self.checked_sub(rhs)
             .expect("attempt to subtract with overflow")
@@ -1204,7 +1527,7 @@ impl Sub for D64 {
 impl Mul for D64 {
     type Output = Self;
 
-    #[inline]
+    #[inline(always)]
     fn mul(self, rhs: Self) -> Self::Output {
         self.checked_mul(rhs)
             .expect("attempt to multiply with overflow")
@@ -1214,7 +1537,7 @@ impl Mul for D64 {
 impl Div for D64 {
     type Output = Self;
 
-    #[inline]
+    #[inline(always)]
     fn div(self, rhs: Self) -> Self::Output {
         self.checked_div(rhs)
             .expect("attempt to divide by zero or overflow")
@@ -1224,35 +1547,35 @@ impl Div for D64 {
 impl Neg for D64 {
     type Output = Self;
 
-    #[inline]
+    #[inline(always)]
     fn neg(self) -> Self::Output {
         self.checked_neg().expect("attempt to negate with overflow")
     }
 }
 
 impl AddAssign for D64 {
-    #[inline]
+    #[inline(always)]
     fn add_assign(&mut self, rhs: Self) {
         *self = *self + rhs;
     }
 }
 
 impl SubAssign for D64 {
-    #[inline]
+    #[inline(always)]
     fn sub_assign(&mut self, rhs: Self) {
         *self = *self - rhs;
     }
 }
 
 impl MulAssign for D64 {
-    #[inline]
+    #[inline(always)]
     fn mul_assign(&mut self, rhs: Self) {
         *self = *self * rhs;
     }
 }
 
 impl DivAssign for D64 {
-    #[inline]
+    #[inline(always)]
     fn div_assign(&mut self, rhs: Self) {
         *self = *self / rhs;
     }
@@ -1265,7 +1588,7 @@ impl DivAssign for D64 {
 impl TryFrom<i64> for D64 {
     type Error = DecimalError;
 
-    #[inline]
+    #[inline(always)]
     fn try_from(value: i64) -> crate::Result<Self> {
         Self::try_from_i64(value)
     }
@@ -1274,7 +1597,7 @@ impl TryFrom<i64> for D64 {
 impl TryFrom<u64> for D64 {
     type Error = DecimalError;
 
-    #[inline]
+    #[inline(always)]
     fn try_from(value: u64) -> crate::Result<Self> {
         Self::try_from_u64(value)
     }
@@ -1283,7 +1606,7 @@ impl TryFrom<u64> for D64 {
 impl TryFrom<f64> for D64 {
     type Error = DecimalError;
 
-    #[inline]
+    #[inline(always)]
     fn try_from(value: f64) -> crate::Result<Self> {
         Self::try_from_f64(value)
     }
@@ -1292,49 +1615,49 @@ impl TryFrom<f64> for D64 {
 impl TryFrom<f32> for D64 {
     type Error = DecimalError;
 
-    #[inline]
+    #[inline(always)]
     fn try_from(value: f32) -> crate::Result<Self> {
         Self::try_from_f64(value as f64)
     }
 }
 
 impl From<i32> for D64 {
-    #[inline]
+    #[inline(always)]
     fn from(value: i32) -> Self {
         Self::from_i32(value)
     }
 }
 
 impl From<u32> for D64 {
-    #[inline]
+    #[inline(always)]
     fn from(value: u32) -> Self {
         Self::from_u32(value)
     }
 }
 
 impl From<i16> for D64 {
-    #[inline]
+    #[inline(always)]
     fn from(value: i16) -> Self {
         Self::from_i32(value as i32)
     }
 }
 
 impl From<u16> for D64 {
-    #[inline]
+    #[inline(always)]
     fn from(value: u16) -> Self {
         Self::from_u32(value as u32)
     }
 }
 
 impl From<i8> for D64 {
-    #[inline]
+    #[inline(always)]
     fn from(value: i8) -> Self {
         Self::from_i32(value as i32)
     }
 }
 
 impl From<u8> for D64 {
-    #[inline]
+    #[inline(always)]
     fn from(value: u8) -> Self {
         Self::from_u32(value as u32)
     }
@@ -1478,7 +1801,7 @@ const fn isqrt(n: u64) -> u64 {
 }
 
 /// Format a u64 with leading zeros into a fixed-size buffer
-#[inline]
+#[inline(always)]
 fn format_u64_padded(mut n: u64, buf: &mut [u8; 8]) {
     for i in (0..8).rev() {
         buf[i] = b'0' + (n % 10) as u8;
@@ -2112,6 +2435,523 @@ mod string_tests {
 }
 
 #[cfg(test)]
+mod const_new_tests {
+    use super::*;
+
+    #[test]
+    fn test_new_basic() {
+        let d = D64::new(123, 45_000_000);
+        assert_eq!(d, D64::from_str("123.45").unwrap());
+    }
+
+    #[test]
+    fn test_new_zero() {
+        let d = D64::new(0, 0);
+        assert_eq!(d, D64::ZERO);
+    }
+
+    #[test]
+    fn test_new_integer_only() {
+        let d = D64::new(42, 0);
+        assert_eq!(d, D64::from_str("42").unwrap());
+    }
+
+    #[test]
+    fn test_new_fractional_only() {
+        let d = D64::new(0, 50_000_000);
+        assert_eq!(d, D64::from_str("0.5").unwrap());
+    }
+
+    #[test]
+    fn test_new_negative_integer() {
+        let d = D64::new(-123, 45_000_000);
+        assert_eq!(d, D64::from_str("-123.45").unwrap());
+    }
+
+    #[test]
+    fn test_new_max_fractional() {
+        let d = D64::new(1, 99_999_999);
+        assert_eq!(d, D64::from_str("1.99999999").unwrap());
+    }
+
+    #[test]
+    fn test_new_const() {
+        const RATE: D64 = D64::new(2, 50_000_000); // 2.5%
+        assert_eq!(RATE, D64::from_str("2.5").unwrap());
+    }
+
+    #[test]
+    fn test_new_large_values() {
+        let d = D64::new(1_000_000, 12_345_678);
+        assert_eq!(d, D64::from_str("1000000.12345678").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod mul_i64_tests {
+    use super::*;
+
+    #[test]
+    fn test_mul_i64_basic() {
+        let price = D64::from_str("10.50").unwrap();
+        let quantity = 5;
+
+        let total = price.mul_i64(quantity).unwrap();
+        assert_eq!(total, D64::from_str("52.50").unwrap());
+    }
+
+    #[test]
+    fn test_mul_i64_zero() {
+        let price = D64::from_str("100.00").unwrap();
+        let total = price.mul_i64(0).unwrap();
+        assert_eq!(total, D64::ZERO);
+    }
+
+    #[test]
+    fn test_mul_i64_one() {
+        let price = D64::from_str("42.42").unwrap();
+        let total = price.mul_i64(1).unwrap();
+        assert_eq!(total, price);
+    }
+
+    #[test]
+    fn test_mul_i64_negative_quantity() {
+        let price = D64::from_str("10.00").unwrap();
+        let total = price.mul_i64(-5).unwrap();
+        assert_eq!(total, D64::from_str("-50.00").unwrap());
+    }
+
+    #[test]
+    fn test_mul_i64_negative_price() {
+        let price = D64::from_str("-25.50").unwrap();
+        let total = price.mul_i64(4).unwrap();
+        assert_eq!(total, D64::from_str("-102.00").unwrap());
+    }
+
+    #[test]
+    fn test_mul_i64_both_negative() {
+        let price = D64::from_str("-10.00").unwrap();
+        let total = price.mul_i64(-3).unwrap();
+        assert_eq!(total, D64::from_str("30.00").unwrap());
+    }
+
+    #[test]
+    fn test_mul_i64_overflow() {
+        let price = D64::MAX;
+        let result = price.mul_i64(2);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_mul_i64_large_quantity() {
+        let price = D64::from_str("0.01").unwrap(); // 1 cent
+        let quantity = 1_000_000; // 1 million
+
+        let total = price.mul_i64(quantity).unwrap();
+        assert_eq!(total, D64::from_str("10000.00").unwrap());
+    }
+
+    #[test]
+    fn test_try_mul_i64_success() {
+        let price = D64::from_str("5.25").unwrap();
+        let total = price.try_mul_i64(10).unwrap();
+        assert_eq!(total, D64::from_str("52.50").unwrap());
+    }
+
+    #[test]
+    fn test_try_mul_i64_overflow_error() {
+        let price = D64::MAX;
+        let result = price.try_mul_i64(2);
+        assert!(matches!(result, Err(DecimalError::Overflow)));
+    }
+
+    #[test]
+    fn test_mul_i64_fractional_result() {
+        let price = D64::from_str("3.333333").unwrap();
+        let total = price.mul_i64(3).unwrap();
+        assert_eq!(total, D64::from_str("9.999999").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod fixed_point_str_tests {
+    use std::println;
+
+    use super::*;
+
+    #[test]
+    fn test_from_fixed_point_str_2_decimals() {
+        // Common for currencies: "12345" with 2 decimals → 123.45
+        let d = D64::from_fixed_point_str("12345", 2).unwrap();
+        assert_eq!(d, D64::from_str("123.45").unwrap());
+    }
+
+    #[test]
+    fn test_from_fixed_point_str_0_decimals() {
+        // No decimals: "123" with 0 decimals → 123.00
+        let d = D64::from_fixed_point_str("123", 0).unwrap();
+        assert_eq!(d, D64::from_str("123").unwrap());
+    }
+
+    #[test]
+    fn test_from_fixed_point_str_8_decimals() {
+        // All decimals: "12345678" with 8 decimals → 0.12345678
+        let d = D64::from_fixed_point_str("12345678", 8).unwrap();
+        assert_eq!(d, D64::from_str("0.12345678").unwrap());
+    }
+
+    #[test]
+    fn test_from_fixed_point_str_4_decimals() {
+        // Mid-range: "1234567" with 4 decimals → 123.4567
+        let d = D64::from_fixed_point_str("1234567", 4).unwrap();
+        assert_eq!(d, D64::from_str("123.4567").unwrap());
+    }
+
+    #[test]
+    fn test_from_fixed_point_str_negative() {
+        let d = D64::from_fixed_point_str("-12345", 2).unwrap();
+        assert_eq!(d, D64::from_str("-123.45").unwrap());
+    }
+
+    #[test]
+    fn test_from_fixed_point_str_zero() {
+        let d = D64::from_fixed_point_str("0", 2).unwrap();
+        assert_eq!(d, D64::ZERO);
+    }
+
+    #[test]
+    fn test_from_fixed_point_str_leading_zeros() {
+        // "00123" with 2 decimals → 1.23
+        let d = D64::from_fixed_point_str("00123", 2).unwrap();
+        assert_eq!(d, D64::from_str("1.23").unwrap());
+    }
+
+    #[test]
+    fn test_from_fixed_point_str_invalid_format() {
+        let result = D64::from_fixed_point_str("not_a_number", 2);
+        assert!(matches!(result, Err(DecimalError::InvalidFormat)));
+    }
+
+    #[test]
+    fn test_from_fixed_point_str_overflow() {
+        // This number fits in i64 (9223372036854775807 is i64::MAX)
+        // but when we try to scale it up, it will overflow
+        let result = D64::from_fixed_point_str("92233720368547758", 2);
+        assert!(matches!(result, Err(DecimalError::Overflow)));
+    }
+
+    #[test]
+    fn test_from_fixed_point_str_parse_error() {
+        // Number too large to even parse into i64
+        let result = D64::from_fixed_point_str("99999999999999999999", 2);
+        assert!(matches!(result, Err(DecimalError::InvalidFormat)));
+    }
+
+    #[test]
+    fn test_from_fixed_point_str_fix_protocol() {
+        // FIX protocol often uses 5 decimals for prices
+        let d = D64::from_fixed_point_str("10050000", 5).unwrap();
+        assert_eq!(d, D64::from_str("100.50000").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod basis_points_tests {
+    use super::*;
+
+    #[test]
+    fn test_from_basis_points_basic() {
+        // 100 bps = 1%
+        let d = D64::from_basis_points(100).unwrap();
+        assert_eq!(d, D64::from_str("0.01").unwrap());
+    }
+
+    #[test]
+    fn test_from_basis_points_zero() {
+        let d = D64::from_basis_points(0).unwrap();
+        assert_eq!(d, D64::ZERO);
+    }
+
+    #[test]
+    fn test_from_basis_points_one() {
+        // 1 bp = 0.0001
+        let d = D64::from_basis_points(1).unwrap();
+        assert_eq!(d, D64::from_str("0.0001").unwrap());
+    }
+
+    #[test]
+    fn test_from_basis_points_50() {
+        // 50 bps = 0.5%
+        let d = D64::from_basis_points(50).unwrap();
+        assert_eq!(d, D64::from_str("0.005").unwrap());
+    }
+
+    #[test]
+    fn test_from_basis_points_10000() {
+        // 10000 bps = 100%
+        let d = D64::from_basis_points(10000).unwrap();
+        assert_eq!(d, D64::from_str("1").unwrap());
+    }
+
+    #[test]
+    fn test_from_basis_points_negative() {
+        // -25 bps
+        let d = D64::from_basis_points(-25).unwrap();
+        assert_eq!(d, D64::from_str("-0.0025").unwrap());
+    }
+
+    #[test]
+    fn test_to_basis_points_basic() {
+        // 1% = 100 bps
+        let d = D64::from_str("0.01").unwrap();
+        assert_eq!(d.to_basis_points(), 100);
+    }
+
+    #[test]
+    fn test_to_basis_points_zero() {
+        assert_eq!(D64::ZERO.to_basis_points(), 0);
+    }
+
+    #[test]
+    fn test_to_basis_points_one() {
+        let d = D64::from_str("0.0001").unwrap();
+        assert_eq!(d.to_basis_points(), 1);
+    }
+
+    #[test]
+    fn test_to_basis_points_50() {
+        let d = D64::from_str("0.005").unwrap();
+        assert_eq!(d.to_basis_points(), 50);
+    }
+
+    #[test]
+    fn test_to_basis_points_negative() {
+        let d = D64::from_str("-0.0025").unwrap();
+        assert_eq!(d.to_basis_points(), -25);
+    }
+
+    #[test]
+    fn test_to_basis_points_fractional_truncates() {
+        // 0.00015 = 1.5 bps, truncates to 1
+        let d = D64::from_str("0.00015").unwrap();
+        assert_eq!(d.to_basis_points(), 1);
+    }
+
+    #[test]
+    fn test_basis_points_round_trip() {
+        let original_bps = 250; // 2.5%
+        let d = D64::from_basis_points(original_bps).unwrap();
+        let back_to_bps = d.to_basis_points();
+        assert_eq!(original_bps, back_to_bps);
+    }
+
+    #[test]
+    fn test_basis_points_interest_rate() {
+        // Fed funds rate move of 25 bps
+        let rate_change = D64::from_basis_points(25).unwrap();
+        let old_rate = D64::from_str("5.25").unwrap(); // 5.25%
+        let new_rate = old_rate + rate_change;
+        assert_eq!(new_rate, D64::from_str("5.2525").unwrap());
+    }
+
+    #[test]
+    fn test_basis_points_spread() {
+        // Credit spread of 150 bps over treasuries
+        let spread = D64::from_basis_points(150).unwrap();
+        assert_eq!(spread, D64::from_str("0.015").unwrap());
+    }
+
+    #[test]
+    fn test_from_basis_points_overflow() {
+        // Very large number that will overflow
+        let result = D64::from_basis_points(i64::MAX);
+        assert!(result.is_none());
+    }
+}
+
+#[cfg(test)]
+mod byte_tests {
+    use super::*;
+
+    #[test]
+    fn test_to_le_bytes() {
+        let d = D64::from_raw(0x0123456789ABCDEF_u64 as i64);
+        let bytes = d.to_le_bytes();
+        assert_eq!(bytes, [0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01]);
+    }
+
+    #[test]
+    fn test_from_le_bytes() {
+        let bytes = [0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01];
+        let d = D64::from_le_bytes(bytes);
+        assert_eq!(d.to_raw(), 0x0123456789ABCDEF_u64 as i64);
+    }
+
+    #[test]
+    fn test_to_be_bytes() {
+        let d = D64::from_raw(0x0123456789ABCDEF_u64 as i64);
+        let bytes = d.to_be_bytes();
+        assert_eq!(bytes, [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF]);
+    }
+
+    #[test]
+    fn test_from_be_bytes() {
+        let bytes = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
+        let d = D64::from_be_bytes(bytes);
+        assert_eq!(d.to_raw(), 0x0123456789ABCDEF_u64 as i64);
+    }
+
+    #[test]
+    fn test_round_trip_le() {
+        let original = D64::from_raw(123_456_789);
+        let bytes = original.to_le_bytes();
+        let restored = D64::from_le_bytes(bytes);
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_round_trip_be() {
+        let original = D64::from_raw(-987_654_321);
+        let bytes = original.to_be_bytes();
+        let restored = D64::from_be_bytes(bytes);
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_round_trip_ne() {
+        let original = D64::from_str("123.45678").unwrap();
+        let bytes = original.to_ne_bytes();
+        let restored = D64::from_ne_bytes(bytes);
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_bytes_constant() {
+        assert_eq!(D64::BYTES, 8);
+    }
+
+    #[test]
+    fn test_zero_bytes() {
+        let zero_bytes = D64::ZERO.to_le_bytes();
+        assert_eq!(zero_bytes, [0u8; 8]);
+        assert_eq!(D64::from_le_bytes(zero_bytes), D64::ZERO);
+    }
+}
+
+#[cfg(test)]
+mod buffer_tests {
+    use super::*;
+
+    #[test]
+    fn test_write_read_le_bytes() {
+        let d = D64::from_str("123.45").unwrap();
+        let mut buf = [0u8; 16];
+
+        d.write_le_bytes(&mut buf[4..]);
+        let restored = D64::read_le_bytes(&buf[4..]);
+
+        assert_eq!(d, restored);
+    }
+
+    #[test]
+    fn test_write_read_be_bytes() {
+        let d = D64::from_str("-987.654321").unwrap();
+        let mut buf = [0u8; 20];
+
+        d.write_be_bytes(&mut buf[8..]);
+        let restored = D64::read_be_bytes(&buf[8..]);
+
+        assert_eq!(d, restored);
+    }
+
+    #[test]
+    fn test_write_read_ne_bytes() {
+        let d = D64::from_raw(999_888_777);
+        let mut buf = [0u8; 8];
+
+        d.write_ne_bytes(&mut buf);
+        let restored = D64::read_ne_bytes(&buf);
+
+        assert_eq!(d, restored);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_write_le_bytes_panic_short_buffer() {
+        let d = D64::ONE;
+        let mut buf = [0u8; 4];
+        d.write_le_bytes(&mut buf);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_read_le_bytes_panic_short_buffer() {
+        let buf = [0u8; 4];
+        let _ = D64::read_le_bytes(&buf);
+    }
+
+    #[test]
+    fn test_try_write_le_bytes_success() {
+        let d = D64::from_raw(123_456_789);
+        let mut buf = [0u8; 10];
+
+        assert!(d.try_write_le_bytes(&mut buf[2..]).is_some());
+        assert_eq!(D64::read_le_bytes(&buf[2..]), d);
+    }
+
+    #[test]
+    fn test_try_write_le_bytes_failure() {
+        let d = D64::ONE;
+        let mut buf = [0u8; 4];
+
+        assert!(d.try_write_le_bytes(&mut buf).is_none());
+    }
+
+    #[test]
+    fn test_try_read_le_bytes_success() {
+        let d = D64::from_str("42.42").unwrap();
+        let bytes = d.to_le_bytes();
+
+        assert_eq!(D64::try_read_le_bytes(&bytes), Some(d));
+    }
+
+    #[test]
+    fn test_try_read_le_bytes_failure() {
+        let buf = [0u8; 4];
+        assert!(D64::try_read_le_bytes(&buf).is_none());
+    }
+
+    #[test]
+    fn test_multiple_writes_to_buffer() {
+        let prices = [
+            D64::from_str("100.50").unwrap(),
+            D64::from_str("200.75").unwrap(),
+            D64::from_str("300.25").unwrap(),
+        ];
+
+        let mut buf = [0u8; 24];
+
+        for (i, price) in prices.iter().enumerate() {
+            price.write_le_bytes(&mut buf[i * 8..]);
+        }
+
+        for (i, expected) in prices.iter().enumerate() {
+            let actual = D64::read_le_bytes(&buf[i * 8..]);
+            assert_eq!(*expected, actual);
+        }
+    }
+
+    #[test]
+    fn test_buffer_at_exact_size() {
+        let d = D64::from_raw(-12345);
+        let mut buf = [0u8; 8];
+
+        d.write_le_bytes(&mut buf);
+        assert_eq!(D64::read_le_bytes(&buf), d);
+    }
+}
+
+#[cfg(test)]
 mod display_tests {
     use std::format;
 
@@ -2168,6 +3008,249 @@ mod display_tests {
     }
 }
 
+#[cfg(test)]
+mod utf8_bytes_tests {
+    use super::*;
+
+    #[test]
+    fn test_from_utf8_bytes_integer() {
+        let bytes = b"123";
+        let d = D64::from_utf8_bytes(bytes).unwrap();
+        assert_eq!(d, D64::from_str("123").unwrap());
+    }
+
+    #[test]
+    fn test_from_utf8_bytes_decimal() {
+        let bytes = b"123.45";
+        let d = D64::from_utf8_bytes(bytes).unwrap();
+        assert_eq!(d, D64::from_str("123.45").unwrap());
+    }
+
+    #[test]
+    fn test_from_utf8_bytes_negative() {
+        let bytes = b"-987.654321";
+        let d = D64::from_utf8_bytes(bytes).unwrap();
+        assert_eq!(d, D64::from_str("-987.654321").unwrap());
+    }
+
+    #[test]
+    fn test_from_utf8_bytes_with_whitespace() {
+        let bytes = b"  42.42  ";
+        let d = D64::from_utf8_bytes(bytes).unwrap();
+        assert_eq!(d, D64::from_str("42.42").unwrap());
+    }
+
+    #[test]
+    fn test_from_utf8_bytes_invalid_utf8() {
+        let bytes = &[0xFF, 0xFE, 0xFD]; // Invalid UTF-8
+        let result = D64::from_utf8_bytes(bytes);
+        assert!(matches!(result, Err(DecimalError::InvalidFormat)));
+    }
+
+    #[test]
+    fn test_from_utf8_bytes_invalid_decimal() {
+        let bytes = b"not a number";
+        let result = D64::from_utf8_bytes(bytes);
+        assert!(matches!(result, Err(DecimalError::InvalidFormat)));
+    }
+
+    #[test]
+    fn test_from_utf8_bytes_empty() {
+        let bytes = b"";
+        let result = D64::from_utf8_bytes(bytes);
+        assert!(matches!(result, Err(DecimalError::InvalidFormat)));
+    }
+
+    #[test]
+    fn test_from_utf8_bytes_zero() {
+        let bytes = b"0";
+        let d = D64::from_utf8_bytes(bytes).unwrap();
+        assert_eq!(d, D64::ZERO);
+    }
+
+    #[test]
+    fn test_from_utf8_bytes_from_network_buffer() {
+        // Simulate reading from a network packet
+        let packet = b"PRICE:100.50;QTY:1000";
+        let price_bytes = &packet[6..12]; // "100.50"
+
+        let price = D64::from_utf8_bytes(price_bytes).unwrap();
+        assert_eq!(price, D64::from_str("100.50").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod percentage_tests {
+    use super::*;
+
+    #[test]
+    fn test_percent_of_basic() {
+        let amount = D64::from_str("1000").unwrap();
+        let percent = D64::from_str("5").unwrap(); // 5%
+
+        let result = amount.percent_of(percent).unwrap();
+        assert_eq!(result, D64::from_str("50").unwrap()); // 5% of 1000 = 50
+    }
+
+    #[test]
+    fn test_percent_of_decimal() {
+        let amount = D64::from_str("250.50").unwrap();
+        let percent = D64::from_str("10").unwrap(); // 10%
+
+        let result = amount.percent_of(percent).unwrap();
+        assert_eq!(result, D64::from_str("25.05").unwrap()); // 10% of 250.50 = 25.05
+    }
+
+    #[test]
+    fn test_percent_of_fractional_percent() {
+        let amount = D64::from_str("1000").unwrap();
+        let percent = D64::from_str("2.5").unwrap(); // 2.5%
+
+        let result = amount.percent_of(percent).unwrap();
+        assert_eq!(result, D64::from_str("25").unwrap()); // 2.5% of 1000 = 25
+    }
+
+    #[test]
+    fn test_percent_of_zero() {
+        let amount = D64::from_str("1000").unwrap();
+        let percent = D64::ZERO;
+
+        let result = amount.percent_of(percent).unwrap();
+        assert_eq!(result, D64::ZERO);
+    }
+
+    #[test]
+    fn test_percent_of_hundred() {
+        let amount = D64::from_str("500").unwrap();
+        let percent = D64::from_str("100").unwrap(); // 100%
+
+        let result = amount.percent_of(percent).unwrap();
+        assert_eq!(result, D64::from_str("500").unwrap()); // 100% of 500 = 500
+    }
+
+    #[test]
+    fn test_percent_of_negative_amount() {
+        let amount = D64::from_str("-1000").unwrap();
+        let percent = D64::from_str("5").unwrap();
+
+        let result = amount.percent_of(percent).unwrap();
+        assert_eq!(result, D64::from_str("-50").unwrap());
+    }
+
+    #[test]
+    fn test_percent_of_overflow() {
+        let amount = D64::MAX;
+        let percent = D64::from_str("200").unwrap();
+
+        let result = amount.percent_of(percent);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_add_percent_basic() {
+        let amount = D64::from_str("1000").unwrap();
+        let percent = D64::from_str("5").unwrap(); // Add 5%
+
+        let result = amount.add_percent(percent).unwrap();
+        assert_eq!(result, D64::from_str("1050").unwrap()); // 1000 + 5% = 1050
+    }
+
+    #[test]
+    fn test_add_percent_decimal() {
+        let amount = D64::from_str("200").unwrap();
+        let percent = D64::from_str("10").unwrap(); // Add 10%
+
+        let result = amount.add_percent(percent).unwrap();
+        assert_eq!(result, D64::from_str("220").unwrap()); // 200 + 10% = 220
+    }
+
+    #[test]
+    fn test_add_percent_fractional() {
+        let amount = D64::from_str("1000").unwrap();
+        let percent = D64::from_str("2.5").unwrap(); // Add 2.5%
+
+        let result = amount.add_percent(percent).unwrap();
+        assert_eq!(result, D64::from_str("1025").unwrap()); // 1000 + 2.5% = 1025
+    }
+
+    #[test]
+    fn test_add_percent_zero() {
+        let amount = D64::from_str("1000").unwrap();
+        let percent = D64::ZERO;
+
+        let result = amount.add_percent(percent).unwrap();
+        assert_eq!(result, amount); // Adding 0% returns original
+    }
+
+    #[test]
+    fn test_add_percent_negative() {
+        let amount = D64::from_str("1000").unwrap();
+        let percent = D64::from_str("-10").unwrap(); // Subtract 10%
+
+        let result = amount.add_percent(percent).unwrap();
+        assert_eq!(result, D64::from_str("900").unwrap()); // 1000 - 10% = 900
+    }
+
+    #[test]
+    fn test_add_percent_negative_amount() {
+        let amount = D64::from_str("-1000").unwrap();
+        let percent = D64::from_str("5").unwrap();
+
+        let result = amount.add_percent(percent).unwrap();
+        assert_eq!(result, D64::from_str("-1050").unwrap());
+    }
+
+    #[test]
+    fn test_add_percent_overflow() {
+        let amount = D64::MAX;
+        let percent = D64::from_str("50").unwrap();
+
+        let result = amount.add_percent(percent);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_add_percent_hundred() {
+        let amount = D64::from_str("500").unwrap();
+        let percent = D64::from_str("100").unwrap(); // Add 100% = double
+
+        let result = amount.add_percent(percent).unwrap();
+        assert_eq!(result, D64::from_str("1000").unwrap());
+    }
+
+    #[test]
+    fn test_percent_commission_calculation() {
+        // Real-world example: $10,000 trade with 0.1% commission
+        let trade_value = D64::from_str("10000").unwrap();
+        let commission_rate = D64::from_str("0.1").unwrap();
+
+        let commission = trade_value.percent_of(commission_rate).unwrap();
+        assert_eq!(commission, D64::from_str("10").unwrap());
+    }
+
+    #[test]
+    fn test_percent_tax_calculation() {
+        // Real-world example: $99.99 item with 8.5% tax
+        let price = D64::from_str("99.99").unwrap();
+        let tax_rate = D64::from_str("8.5").unwrap();
+
+        let total = price.add_percent(tax_rate).unwrap();
+        // 99.99 * 1.085 = 108.48915
+        // Rounded to 2 decimal places (cents) = 108.49
+        assert_eq!(total.round_dp(2), D64::from_str("108.49").unwrap());
+    }
+
+    #[test]
+    fn test_percent_discount_calculation() {
+        // Real-world example: $299 item with 15% discount
+        let price = D64::from_str("299").unwrap();
+        let discount_rate = D64::from_str("-15").unwrap(); // Negative for discount
+
+        let final_price = price.add_percent(discount_rate).unwrap();
+        assert_eq!(final_price, D64::from_str("254.15").unwrap());
+    }
+}
+
 #[cfg(all(test, feature = "serde"))]
 mod serde_tests {
     use super::*;
@@ -2214,4 +3297,3 @@ mod serde_tests {
         assert_eq!(json, r#""-123.45""#);
     }
 }
-
