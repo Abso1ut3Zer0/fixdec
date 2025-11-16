@@ -1408,97 +1408,164 @@ impl D64 {
         };
 
         Ok(Self { value })
-        // let s = s.trim();
+    }
 
-        // if s.is_empty() {
-        //     return Err(DecimalError::InvalidFormat);
-        // }
+    /// Parse a string, rounding to 8 decimal places if necessary
+    ///
+    /// Unlike `from_str_exact`, this will succeed even if the input has more than
+    /// 8 decimal places, rounding the excess digits using banker's rounding.
+    pub fn from_str_lossy(s: &str) -> crate::Result<Self> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err(DecimalError::InvalidFormat);
+        }
 
-        // let bytes = s.as_bytes();
-        // let len = bytes.len();
+        let bytes = s.as_bytes();
+        let len = bytes.len();
 
-        // // Fast path: check for negative
-        // let (is_negative, start_pos) = match bytes[0] {
-        //     b'-' => (true, 1),
-        //     b'+' => (false, 1),
-        //     _ => (false, 0),
-        // };
+        let (is_negative, start_pos) = match bytes[0] {
+            b'-' => (true, 1),
+            b'+' => (false, 1),
+            _ => (false, 0),
+        };
 
-        // if start_pos >= len {
-        //     return Err(DecimalError::InvalidFormat);
-        // }
+        if start_pos >= len {
+            return Err(DecimalError::InvalidFormat);
+        }
 
-        // // Check for double sign
-        // if start_pos < len && (bytes[start_pos] == b'-' || bytes[start_pos] == b'+') {
-        //     return Err(DecimalError::InvalidFormat);
-        // }
+        // Check for double sign
+        if start_pos < len && (bytes[start_pos] == b'-' || bytes[start_pos] == b'+') {
+            return Err(DecimalError::InvalidFormat);
+        }
 
-        // // Find decimal point position
-        // let decimal_pos = bytes[start_pos..].iter().position(|&b| b == b'.');
+        // Find decimal point position
+        let mut decimal_pos = None;
+        for i in start_pos..len {
+            if bytes[i] == b'.' {
+                decimal_pos = Some(i);
+                break;
+            }
+        }
 
-        // // Parse integer part
-        // let int_end = decimal_pos.map(|p| start_pos + p).unwrap_or(len);
-        // let int_slice = &bytes[start_pos..int_end];
+        // Parse integer part
+        let int_end = decimal_pos.unwrap_or(len);
+        let int_slice = &bytes[start_pos..int_end];
 
-        // // Fast integer parsing (always positive)
-        // let mut integer_part = 0i64;
-        // for &byte in int_slice {
-        //     if !byte.is_ascii_digit() {
-        //         return Err(DecimalError::InvalidFormat);
-        //     }
-        //     integer_part = integer_part
-        //         .checked_mul(10)
-        //         .and_then(|v| v.checked_add((byte - b'0') as i64))
-        //         .ok_or(DecimalError::Overflow)?;
-        // }
+        let mut integer_part = 0i64;
+        for &byte in int_slice {
+            let digit = byte.wrapping_sub(b'0');
+            if digit > 9 {
+                return Err(DecimalError::InvalidFormat);
+            }
+            integer_part = integer_part.wrapping_mul(10).wrapping_add(digit as i64);
+            if integer_part < 0 {
+                return Err(DecimalError::Overflow);
+            }
+        }
 
-        // // Parse fractional part (always positive)
-        // let fractional_value = if let Some(_) = decimal_pos {
-        //     let frac_start = int_end + 1;
-        //     if frac_start >= len {
-        //         return Err(DecimalError::InvalidFormat);
-        //     }
+        // Parse fractional part with rounding
+        let fractional_value = if let Some(dp) = decimal_pos {
+            let frac_start = dp + 1;
+            if frac_start >= len {
+                return Err(DecimalError::InvalidFormat);
+            }
 
-        //     let frac_slice = &bytes[frac_start..];
-        //     let frac_len = frac_slice.len();
+            let frac_slice = &bytes[frac_start..];
+            let frac_len = frac_slice.len();
 
-        //     if frac_len > Self::DECIMALS as usize {
-        //         return Err(DecimalError::PrecisionLoss);
-        //     }
+            if frac_len <= Self::DECIMALS as usize {
+                // Fast path: no rounding needed
+                let mut frac_value = 0u64;
+                for &byte in frac_slice {
+                    let digit = byte.wrapping_sub(b'0');
+                    if digit > 9 {
+                        return Err(DecimalError::InvalidFormat);
+                    }
+                    frac_value = frac_value * 10 + digit as u64;
+                }
 
-        //     // Fast fractional parsing
-        //     let mut frac_value = 0u64;
-        //     for &byte in frac_slice {
-        //         if !byte.is_ascii_digit() {
-        //             return Err(DecimalError::InvalidFormat);
-        //         }
-        //         frac_value = frac_value * 10 + (byte - b'0') as u64;
-        //     }
+                let remaining_digits = Self::DECIMALS as usize - frac_len;
+                const POWERS: [u64; 9] = [
+                    1,
+                    10,
+                    100,
+                    1_000,
+                    10_000,
+                    100_000,
+                    1_000_000,
+                    10_000_000,
+                    100_000_000,
+                ];
+                frac_value * POWERS[remaining_digits]
+            } else {
+                // Slow path: need to round
+                // Parse first 8 digits
+                let mut frac_value = 0u64;
+                for &byte in &frac_slice[..Self::DECIMALS as usize] {
+                    let digit = byte.wrapping_sub(b'0');
+                    if digit > 9 {
+                        return Err(DecimalError::InvalidFormat);
+                    }
+                    frac_value = frac_value * 10 + digit as u64;
+                }
 
-        //     // Scale up to 8 decimals
-        //     let remaining_digits = Self::DECIMALS as usize - frac_len;
-        //     frac_value * 10u64.pow(remaining_digits as u32)
-        // } else {
-        //     0
-        // };
+                // Get the 9th digit for rounding
+                let next_digit = frac_slice[Self::DECIMALS as usize].wrapping_sub(b'0');
+                if next_digit > 9 {
+                    return Err(DecimalError::InvalidFormat);
+                }
 
-        // // Combine parts (both positive at this point)
-        // let int_scaled = integer_part
-        //     .checked_mul(Self::SCALE)
-        //     .ok_or(DecimalError::Overflow)?;
+                // Validate remaining digits (but don't use them)
+                for &byte in &frac_slice[Self::DECIMALS as usize + 1..] {
+                    let digit = byte.wrapping_sub(b'0');
+                    if digit > 9 {
+                        return Err(DecimalError::InvalidFormat);
+                    }
+                }
 
-        // let abs_value = int_scaled
-        //     .checked_add(fractional_value as i64)
-        //     .ok_or(DecimalError::Overflow)?;
+                // Banker's rounding
+                if next_digit > 5 {
+                    frac_value += 1;
+                } else if next_digit == 5 {
+                    // Check if there are more non-zero digits
+                    let mut has_more = false;
+                    for &byte in &frac_slice[Self::DECIMALS as usize + 1..] {
+                        if byte != b'0' {
+                            has_more = true;
+                            break;
+                        }
+                    }
 
-        // // Apply sign at the end
-        // let value = if is_negative {
-        //     abs_value.checked_neg().ok_or(DecimalError::Overflow)?
-        // } else {
-        //     abs_value
-        // };
+                    if has_more {
+                        frac_value += 1;
+                    } else if frac_value % 2 == 1 {
+                        // Exactly 0.5 - round to even
+                        frac_value += 1;
+                    }
+                }
 
-        // Ok(Self { value })
+                frac_value
+            }
+        } else {
+            0
+        };
+
+        // Combine parts
+        let int_scaled = integer_part
+            .checked_mul(Self::SCALE)
+            .ok_or(DecimalError::Overflow)?;
+
+        let abs_value = int_scaled
+            .checked_add(fractional_value as i64)
+            .ok_or(DecimalError::Overflow)?;
+
+        let value = if is_negative {
+            abs_value.checked_neg().ok_or(DecimalError::Overflow)?
+        } else {
+            abs_value
+        };
+
+        Ok(Self { value })
     }
 
     /// Parse assuming a fixed number of decimals (no decimal point in string)
@@ -2801,6 +2868,42 @@ mod string_tests {
 
         // Sign after number
         assert!(D64::from_str_exact("123-").is_err());
+    }
+
+    #[test]
+    fn test_d64_lossy_exact_precision() {
+        let d = D64::from_str_lossy("123.12345678").unwrap();
+        assert_eq!(d, D64::from_str_exact("123.12345678").unwrap());
+    }
+
+    #[test]
+    fn test_d64_lossy_rounds_down() {
+        let d = D64::from_str_lossy("123.123456784").unwrap(); // 9 decimals
+        assert_eq!(d, D64::from_str_exact("123.12345678").unwrap());
+    }
+
+    #[test]
+    fn test_d64_lossy_rounds_up() {
+        let d = D64::from_str_lossy("123.123456786").unwrap(); // 9 decimals
+        assert_eq!(d, D64::from_str_exact("123.12345679").unwrap());
+    }
+
+    #[test]
+    fn test_d64_lossy_bankers_rounding_even() {
+        let d = D64::from_str_lossy("123.123456785").unwrap(); // Exactly .5
+        assert_eq!(d, D64::from_str_exact("123.12345678").unwrap()); // Round to even
+    }
+
+    #[test]
+    fn test_d64_lossy_bankers_rounding_odd() {
+        let d = D64::from_str_lossy("123.123456795").unwrap(); // Exactly .5
+        assert_eq!(d, D64::from_str_exact("123.12345680").unwrap()); // Round to even
+    }
+
+    #[test]
+    fn test_d64_lossy_many_decimals() {
+        let d = D64::from_str_lossy("1.123456789012345678").unwrap();
+        assert_eq!(d, D64::from_str_exact("1.12345679").unwrap());
     }
 }
 

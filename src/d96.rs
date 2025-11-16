@@ -1549,7 +1549,94 @@ impl D96 {
     /// Parses a decimal string into a D96.
     ///
     /// Supports formats like: "123", "123.45", "-123.45", "0.000000000001"
+    /// Fast parsing using SWAR (SIMD Within A Register) for both integer and fractional parts
     pub fn from_str_exact(s: &str) -> crate::Result<Self> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err(DecimalError::InvalidFormat);
+        }
+
+        let bytes = s.as_bytes();
+
+        // Quick length check
+        if bytes.len() > 48 {
+            return Err(DecimalError::InvalidFormat);
+        }
+
+        let (is_negative, start) = match bytes[0] {
+            b'-' => (true, 1),
+            b'+' => (false, 1),
+            _ => (false, 0),
+        };
+
+        if start >= bytes.len() {
+            return Err(DecimalError::InvalidFormat);
+        }
+
+        // Find decimal point
+        let mut decimal_idx = None;
+        for (i, &b) in bytes[start..].iter().enumerate() {
+            if b == b'.' {
+                decimal_idx = Some(start + i);
+                break;
+            }
+        }
+
+        let int_end = decimal_idx.unwrap_or(bytes.len());
+        let int_bytes = &bytes[start..int_end];
+
+        // Parse integer part with SWAR
+        let integer_part = parse_integer_swar(int_bytes)?;
+
+        // Parse fractional part
+        let fractional_value = if let Some(dp_idx) = decimal_idx {
+            let frac_bytes = &bytes[dp_idx + 1..];
+
+            if frac_bytes.is_empty() {
+                return Err(DecimalError::InvalidFormat);
+            }
+
+            if frac_bytes.len() > Self::DECIMALS as usize {
+                return Err(DecimalError::PrecisionLoss);
+            }
+
+            // Parse the fractional digits
+            let frac_digits = parse_integer_swar(frac_bytes)?;
+
+            // Scale to full precision
+            let remaining_decimals = Self::DECIMALS as usize - frac_bytes.len();
+            (frac_digits as u128) * fast_pow10(remaining_decimals as u8)
+        } else {
+            0
+        };
+
+        // Combine and validate
+        let int_scaled = integer_part
+            .checked_mul(Self::SCALE)
+            .ok_or(DecimalError::Overflow)?;
+
+        let abs_value = int_scaled
+            .checked_add(fractional_value as i128)
+            .ok_or(DecimalError::Overflow)?;
+
+        let value = if is_negative {
+            abs_value.checked_neg().ok_or(DecimalError::Overflow)?
+        } else {
+            abs_value
+        };
+
+        if value > Self::MAX.value || value < Self::MIN.value {
+            return Err(DecimalError::Overflow);
+        }
+
+        Ok(Self { value })
+    }
+
+    /// Parse a string, rounding to 12 decimal places if necessary
+    ///
+    /// Unlike `from_str_exact`, this will succeed even if the input has more than
+    /// 12 decimal places, rounding the excess digits using banker's rounding.
+    pub fn from_str_lossy(s: &str) -> crate::Result<Self> {
         let s = s.trim();
 
         if s.is_empty() {
@@ -1557,95 +1644,96 @@ impl D96 {
         }
 
         let bytes = s.as_bytes();
-        let len = bytes.len();
 
-        // Parse sign
-        let (is_negative, start_pos) = match bytes[0] {
+        if bytes.len() > 48 {
+            return Err(DecimalError::InvalidFormat);
+        }
+
+        let (is_negative, start) = match bytes[0] {
             b'-' => (true, 1),
             b'+' => (false, 1),
             _ => (false, 0),
         };
 
-        if start_pos >= len {
+        if start >= bytes.len() {
             return Err(DecimalError::InvalidFormat);
         }
 
-        // Check for double sign
-        if start_pos < len && (bytes[start_pos] == b'-' || bytes[start_pos] == b'+') {
-            return Err(DecimalError::InvalidFormat);
-        }
-
-        // Find decimal point position
-        let mut decimal_pos = None;
-        for i in start_pos..len {
-            if bytes[i] == b'.' {
-                decimal_pos = Some(i);
+        // Find decimal point
+        let mut decimal_idx = None;
+        for (i, &b) in bytes[start..].iter().enumerate() {
+            if b == b'.' {
+                decimal_idx = Some(start + i);
                 break;
             }
         }
 
+        let int_end = decimal_idx.unwrap_or(bytes.len());
+        let int_bytes = &bytes[start..int_end];
+
         // Parse integer part
-        let int_end = decimal_pos.unwrap_or(len);
-        let int_slice = &bytes[start_pos..int_end];
+        let integer_part = parse_integer_swar(int_bytes)?;
 
-        // Fast integer parsing
-        let mut integer_part = 0i128;
-        for &byte in int_slice {
-            let digit = byte.wrapping_sub(b'0');
-            if digit > 9 {
-                return Err(DecimalError::InvalidFormat);
-            }
-            integer_part = integer_part.wrapping_mul(10).wrapping_add(digit as i128);
+        // Parse fractional part with rounding
+        let fractional_value = if let Some(dp_idx) = decimal_idx {
+            let frac_bytes = &bytes[dp_idx + 1..];
 
-            // Check for overflow
-            if integer_part < 0 {
-                return Err(DecimalError::Overflow);
-            }
-        }
-
-        // Parse fractional part
-        let fractional_value = if let Some(dp) = decimal_pos {
-            let frac_start = dp + 1;
-            if frac_start >= len {
+            if frac_bytes.is_empty() {
                 return Err(DecimalError::InvalidFormat);
             }
 
-            let frac_slice = &bytes[frac_start..];
-            let frac_len = frac_slice.len();
+            let frac_len = frac_bytes.len();
 
-            if frac_len > Self::DECIMALS as usize {
-                return Err(DecimalError::PrecisionLoss);
-            }
+            if frac_len <= Self::DECIMALS as usize {
+                // Fast path: fits exactly, no rounding needed
+                let frac_digits = parse_integer_swar(frac_bytes)?;
+                let remaining_decimals = Self::DECIMALS as usize - frac_len;
+                (frac_digits as u128) * fast_pow10(remaining_decimals as u8)
+            } else {
+                // Slow path: need to round
+                // Parse all digits we can use (DECIMALS)
+                let usable_frac = &frac_bytes[..Self::DECIMALS as usize];
+                let mut frac_digits = parse_integer_swar(usable_frac)?;
 
-            // Fast fractional parsing
-            let mut frac_value = 0u128;
-            for &byte in frac_slice {
-                let digit = byte.wrapping_sub(b'0');
-                if digit > 9 {
+                // Get the next digit for rounding
+                let next_digit = frac_bytes[Self::DECIMALS as usize].wrapping_sub(b'0');
+
+                if next_digit > 9 {
                     return Err(DecimalError::InvalidFormat);
                 }
-                frac_value = frac_value * 10 + digit as u128;
+
+                // Banker's rounding (round half to even)
+                if next_digit > 5 {
+                    // Round up
+                    frac_digits += 1;
+                } else if next_digit == 5 {
+                    // Check if there are more non-zero digits
+                    let mut has_more = false;
+                    for &b in &frac_bytes[Self::DECIMALS as usize + 1..] {
+                        let d = b.wrapping_sub(b'0');
+                        if d > 9 {
+                            return Err(DecimalError::InvalidFormat);
+                        }
+                        if d != 0 {
+                            has_more = true;
+                            break;
+                        }
+                    }
+
+                    if has_more {
+                        // Round up
+                        frac_digits += 1;
+                    } else {
+                        // Exactly half - round to even
+                        if frac_digits % 2 == 1 {
+                            frac_digits += 1;
+                        }
+                    }
+                }
+                // next_digit < 5: round down (do nothing)
+
+                frac_digits as u128
             }
-
-            // Scale up to 12 decimals
-            let remaining_digits = Self::DECIMALS as usize - frac_len;
-
-            const POWERS: [u128; 13] = [
-                1,
-                10,
-                100,
-                1_000,
-                10_000,
-                100_000,
-                1_000_000,
-                10_000_000,
-                100_000_000,
-                1_000_000_000,
-                10_000_000_000,
-                100_000_000_000,
-                1_000_000_000_000,
-            ];
-            frac_value * POWERS[remaining_digits]
         } else {
             0
         };
@@ -1666,7 +1754,7 @@ impl D96 {
             abs_value
         };
 
-        // CRITICAL: Check 96-bit bounds
+        // Check 96-bit bounds
         if value > Self::MAX.value || value < Self::MIN.value {
             return Err(DecimalError::Overflow);
         }
@@ -1703,6 +1791,74 @@ impl FromStr for D96 {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::from_str_exact(s)
+    }
+}
+
+/// Parse digits using SWAR (processes 4 digits at a time)
+#[inline(always)]
+fn parse_integer_swar(bytes: &[u8]) -> crate::Result<i128> {
+    let mut result = 0i128;
+    let mut i = 0;
+
+    // Process 4 digits at a time
+    while i + 3 < bytes.len() {
+        // Read 4 bytes in order: most significant first
+        let b0 = bytes[i];
+        let b1 = bytes[i + 1];
+        let b2 = bytes[i + 2];
+        let b3 = bytes[i + 3];
+
+        // Check all are ASCII digits
+        let d0 = b0.wrapping_sub(b'0');
+        let d1 = b1.wrapping_sub(b'0');
+        let d2 = b2.wrapping_sub(b'0');
+        let d3 = b3.wrapping_sub(b'0');
+
+        if d0 > 9 || d1 > 9 || d2 > 9 || d3 > 9 {
+            return Err(DecimalError::InvalidFormat);
+        }
+
+        // Combine: result = result * 10000 + (d0*1000 + d1*100 + d2*10 + d3)
+        result = result * 10000
+            + (d0 as i128) * 1000
+            + (d1 as i128) * 100
+            + (d2 as i128) * 10
+            + (d3 as i128);
+        i += 4;
+    }
+
+    // Handle remaining 1-3 digits
+    while i < bytes.len() {
+        let digit = bytes[i].wrapping_sub(b'0');
+        if digit > 9 {
+            return Err(DecimalError::InvalidFormat);
+        }
+        result = result * 10 + digit as i128;
+        i += 1;
+    }
+
+    Ok(result)
+}
+
+/// Fast power of 10 computation using bit shifts where possible
+#[inline(always)]
+const fn fast_pow10(n: u8) -> u128 {
+    // For small powers, use precomputed constants
+    match n {
+        0 => 1,
+        1 => 10,
+        2 => 100,
+        3 => 1_000,
+        4 => 10_000,
+        5 => 100_000,
+        6 => 1_000_000,
+        7 => 10_000_000,
+        8 => 100_000_000,
+        9 => 1_000_000_000,
+        10 => 10_000_000_000,
+        11 => 100_000_000_000,
+        12 => 1_000_000_000_000,
+        _ => panic!("fast_pow10: exponent too large"),
     }
 }
 
@@ -3243,6 +3399,47 @@ mod string_tests {
         // Test all 12 decimal places
         let d = D96::from_str_exact("1.234567890123").unwrap();
         assert_eq!(d.to_raw(), 1_234_567_890_123);
+    }
+
+    #[test]
+    fn test_d96_lossy_exact_precision() {
+        let d = D96::from_str_lossy("123.123456789012").unwrap();
+        assert_eq!(d, D96::from_str_exact("123.123456789012").unwrap());
+    }
+
+    #[test]
+    fn test_d96_lossy_rounds_down() {
+        let d = D96::from_str_lossy("123.1234567890124").unwrap(); // 13 decimals
+        assert_eq!(d, D96::from_str_exact("123.123456789012").unwrap());
+    }
+
+    #[test]
+    fn test_d96_lossy_rounds_up() {
+        let d = D96::from_str_lossy("123.1234567890126").unwrap(); // 13 decimals
+        assert_eq!(d, D96::from_str_exact("123.123456789013").unwrap());
+    }
+
+    #[test]
+    fn test_d96_lossy_bankers_rounding() {
+        let d = D96::from_str_lossy("123.1234567890125").unwrap(); // Exactly .5
+        assert_eq!(d, D96::from_str_exact("123.123456789012").unwrap()); // Round to even
+    }
+
+    #[test]
+    fn test_d96_lossy_ethereum_wei() {
+        // 1 wei (18 decimals) rounds to 0 in D96 (12 decimals)
+        let d = D96::from_str_lossy("0.000000000000000001").unwrap();
+        assert_eq!(d, D96::ZERO);
+
+        // 1000 wei = 1 microGwei (fits in D96)
+        let d = D96::from_str_lossy("0.000000000001").unwrap();
+        assert_eq!(d, D96::from_str_exact("0.000000000001").unwrap());
+    }
+
+    #[test]
+    fn test_d96_lossy_many_excess_decimals() {
+        let d = D96::from_str_lossy("1.12345678901234567890123456789").unwrap();
+        assert_eq!(d, D96::from_str_exact("1.123456789012").unwrap());
     }
 }
 
