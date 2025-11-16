@@ -2,6 +2,20 @@
 name = "fixdec"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "High-performance fixed-point decimal types for financial calculations and cryptocurrency"
+repository = "https://github.com/Abso1ut3Zer0/fixdec"
+rust-version = "1.89.0"
+readme = "README.md"
+keywords = ["decimal", "fixed-point", "finance", "cryptocurrency", "no-std"]
+categories = ["mathematics", "no-std", "data-structures"]
+exclude = [
+    ".github/",
+    ".idea/",
+    ".editorconfig",
+    ".gitignore",
+    "CONTRIBUTING.md",
+]
 
 [dependencies]
 serde = { version = "1.0.228", optional = true }
