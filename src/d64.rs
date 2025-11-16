@@ -1,4 +1,5 @@
 use core::fmt;
+use core::iter::{Product, Sum};
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 use core::str::FromStr;
 
@@ -1194,7 +1195,7 @@ impl D64 {
     /// Returns `DecimalError::InvalidFormat` if the string is not a valid decimal.
     /// Returns `DecimalError::Overflow` if the value is too large.
     /// Returns `DecimalError::PrecisionLoss` if more than 8 decimal places are provided.
-    pub fn from_str(s: &str) -> crate::Result<Self> {
+    pub fn from_str_exact(s: &str) -> crate::Result<Self> {
         let s = s.trim();
 
         if s.is_empty() {
@@ -1306,7 +1307,7 @@ impl FromStr for D64 {
     type Err = DecimalError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::from_str(s)
+        Self::from_str_exact(s)
     }
 }
 
@@ -1320,7 +1321,7 @@ impl D64 {
     /// Parse from byte slice (useful for binary protocols)
     pub fn from_utf8_bytes(bytes: &[u8]) -> crate::Result<Self> {
         let s = core::str::from_utf8(bytes).map_err(|_| DecimalError::InvalidFormat)?;
-        Self::from_str(s)
+        Self::from_str_exact(s)
     }
 
     /// Creates a D64 from its representation as a byte array in big endian.
@@ -1726,6 +1727,38 @@ impl fmt::Debug for D64 {
         }
     }
 }
+
+// ============================================================================
+// Iterator Trait Implementations
+// ============================================================================
+
+impl Sum for D64 {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, |acc, x| acc + x)
+    }
+}
+
+impl<'a> Sum<&'a D64> for D64 {
+    fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, |acc, x| acc + *x)
+    }
+}
+
+impl Product for D64 {
+    fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ONE, |acc, x| acc * x)
+    }
+}
+
+impl<'a> Product<&'a D64> for D64 {
+    fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+        iter.fold(Self::ONE, |acc, x| acc * *x)
+    }
+}
+
+// ============================================================================
+// Serde Support
+// ============================================================================
 
 #[cfg(feature = "serde")]
 impl Serialize for D64 {
@@ -2356,53 +2389,65 @@ mod string_tests {
 
     #[test]
     fn test_from_str_integer() {
-        assert_eq!(D64::from_str("123").unwrap().to_raw(), 12_300_000_000);
-        assert_eq!(D64::from_str("0").unwrap().to_raw(), 0);
-        assert_eq!(D64::from_str("-456").unwrap().to_raw(), -45_600_000_000);
+        assert_eq!(D64::from_str_exact("123").unwrap().to_raw(), 12_300_000_000);
+        assert_eq!(D64::from_str_exact("0").unwrap().to_raw(), 0);
+        assert_eq!(
+            D64::from_str_exact("-456").unwrap().to_raw(),
+            -45_600_000_000
+        );
     }
 
     #[test]
     fn test_from_str_decimal() {
-        assert_eq!(D64::from_str("123.45").unwrap().to_raw(), 12_345_000_000);
-        assert_eq!(D64::from_str("0.00000001").unwrap().to_raw(), 1);
-        assert_eq!(D64::from_str("-123.45").unwrap().to_raw(), -12_345_000_000);
+        assert_eq!(
+            D64::from_str_exact("123.45").unwrap().to_raw(),
+            12_345_000_000
+        );
+        assert_eq!(D64::from_str_exact("0.00000001").unwrap().to_raw(), 1);
+        assert_eq!(
+            D64::from_str_exact("-123.45").unwrap().to_raw(),
+            -12_345_000_000
+        );
     }
 
     #[test]
     fn test_from_str_leading_decimal() {
-        assert_eq!(D64::from_str("0.5").unwrap().to_raw(), 50_000_000);
-        assert_eq!(D64::from_str(".5").unwrap().to_raw(), 50_000_000);
+        assert_eq!(D64::from_str_exact("0.5").unwrap().to_raw(), 50_000_000);
+        assert_eq!(D64::from_str_exact(".5").unwrap().to_raw(), 50_000_000);
     }
 
     #[test]
     fn test_from_str_trailing_zeros() {
         assert_eq!(
-            D64::from_str("123.45000000").unwrap().to_raw(),
+            D64::from_str_exact("123.45000000").unwrap().to_raw(),
             12_345_000_000
         );
-        assert_eq!(D64::from_str("1.10").unwrap().to_raw(), 110_000_000);
+        assert_eq!(D64::from_str_exact("1.10").unwrap().to_raw(), 110_000_000);
     }
 
     #[test]
     fn test_from_str_plus_sign() {
-        assert_eq!(D64::from_str("+123.45").unwrap().to_raw(), 12_345_000_000);
+        assert_eq!(
+            D64::from_str_exact("+123.45").unwrap().to_raw(),
+            12_345_000_000
+        );
     }
 
     #[test]
     fn test_from_str_whitespace() {
         assert_eq!(
-            D64::from_str("  123.45  ").unwrap().to_raw(),
+            D64::from_str_exact("  123.45  ").unwrap().to_raw(),
             12_345_000_000
         );
     }
 
     #[test]
     fn test_from_str_errors() {
-        assert!(D64::from_str("").is_err());
-        assert!(D64::from_str("abc").is_err());
-        assert!(D64::from_str("12.34.56").is_err());
+        assert!(D64::from_str_exact("").is_err());
+        assert!(D64::from_str_exact("abc").is_err());
+        assert!(D64::from_str_exact("12.34.56").is_err());
         assert!(matches!(
-            D64::from_str("123.123456789"),
+            D64::from_str_exact("123.123456789"),
             Err(DecimalError::PrecisionLoss)
         ));
     }
@@ -2410,7 +2455,7 @@ mod string_tests {
     #[test]
     fn test_from_str_overflow() {
         assert!(matches!(
-            D64::from_str("999999999999999"),
+            D64::from_str_exact("999999999999999"),
             Err(DecimalError::Overflow)
         ));
     }
@@ -2424,13 +2469,13 @@ mod string_tests {
     #[test]
     fn test_from_str_edge_cases() {
         // Just decimal point
-        assert!(D64::from_str(".").is_err());
+        assert!(D64::from_str_exact(".").is_err());
 
         // Multiple signs
-        assert!(D64::from_str("--123").is_err());
+        assert!(D64::from_str_exact("--123").is_err());
 
         // Sign after number
-        assert!(D64::from_str("123-").is_err());
+        assert!(D64::from_str_exact("123-").is_err());
     }
 }
 
@@ -2441,7 +2486,7 @@ mod const_new_tests {
     #[test]
     fn test_new_basic() {
         let d = D64::new(123, 45_000_000);
-        assert_eq!(d, D64::from_str("123.45").unwrap());
+        assert_eq!(d, D64::from_str_exact("123.45").unwrap());
     }
 
     #[test]
@@ -2453,37 +2498,37 @@ mod const_new_tests {
     #[test]
     fn test_new_integer_only() {
         let d = D64::new(42, 0);
-        assert_eq!(d, D64::from_str("42").unwrap());
+        assert_eq!(d, D64::from_str_exact("42").unwrap());
     }
 
     #[test]
     fn test_new_fractional_only() {
         let d = D64::new(0, 50_000_000);
-        assert_eq!(d, D64::from_str("0.5").unwrap());
+        assert_eq!(d, D64::from_str_exact("0.5").unwrap());
     }
 
     #[test]
     fn test_new_negative_integer() {
         let d = D64::new(-123, 45_000_000);
-        assert_eq!(d, D64::from_str("-123.45").unwrap());
+        assert_eq!(d, D64::from_str_exact("-123.45").unwrap());
     }
 
     #[test]
     fn test_new_max_fractional() {
         let d = D64::new(1, 99_999_999);
-        assert_eq!(d, D64::from_str("1.99999999").unwrap());
+        assert_eq!(d, D64::from_str_exact("1.99999999").unwrap());
     }
 
     #[test]
     fn test_new_const() {
         const RATE: D64 = D64::new(2, 50_000_000); // 2.5%
-        assert_eq!(RATE, D64::from_str("2.5").unwrap());
+        assert_eq!(RATE, D64::from_str_exact("2.5").unwrap());
     }
 
     #[test]
     fn test_new_large_values() {
         let d = D64::new(1_000_000, 12_345_678);
-        assert_eq!(d, D64::from_str("1000000.12345678").unwrap());
+        assert_eq!(d, D64::from_str_exact("1000000.12345678").unwrap());
     }
 }
 
@@ -2493,46 +2538,46 @@ mod mul_i64_tests {
 
     #[test]
     fn test_mul_i64_basic() {
-        let price = D64::from_str("10.50").unwrap();
+        let price = D64::from_str_exact("10.50").unwrap();
         let quantity = 5;
 
         let total = price.mul_i64(quantity).unwrap();
-        assert_eq!(total, D64::from_str("52.50").unwrap());
+        assert_eq!(total, D64::from_str_exact("52.50").unwrap());
     }
 
     #[test]
     fn test_mul_i64_zero() {
-        let price = D64::from_str("100.00").unwrap();
+        let price = D64::from_str_exact("100.00").unwrap();
         let total = price.mul_i64(0).unwrap();
         assert_eq!(total, D64::ZERO);
     }
 
     #[test]
     fn test_mul_i64_one() {
-        let price = D64::from_str("42.42").unwrap();
+        let price = D64::from_str_exact("42.42").unwrap();
         let total = price.mul_i64(1).unwrap();
         assert_eq!(total, price);
     }
 
     #[test]
     fn test_mul_i64_negative_quantity() {
-        let price = D64::from_str("10.00").unwrap();
+        let price = D64::from_str_exact("10.00").unwrap();
         let total = price.mul_i64(-5).unwrap();
-        assert_eq!(total, D64::from_str("-50.00").unwrap());
+        assert_eq!(total, D64::from_str_exact("-50.00").unwrap());
     }
 
     #[test]
     fn test_mul_i64_negative_price() {
-        let price = D64::from_str("-25.50").unwrap();
+        let price = D64::from_str_exact("-25.50").unwrap();
         let total = price.mul_i64(4).unwrap();
-        assert_eq!(total, D64::from_str("-102.00").unwrap());
+        assert_eq!(total, D64::from_str_exact("-102.00").unwrap());
     }
 
     #[test]
     fn test_mul_i64_both_negative() {
-        let price = D64::from_str("-10.00").unwrap();
+        let price = D64::from_str_exact("-10.00").unwrap();
         let total = price.mul_i64(-3).unwrap();
-        assert_eq!(total, D64::from_str("30.00").unwrap());
+        assert_eq!(total, D64::from_str_exact("30.00").unwrap());
     }
 
     #[test]
@@ -2544,18 +2589,18 @@ mod mul_i64_tests {
 
     #[test]
     fn test_mul_i64_large_quantity() {
-        let price = D64::from_str("0.01").unwrap(); // 1 cent
+        let price = D64::from_str_exact("0.01").unwrap(); // 1 cent
         let quantity = 1_000_000; // 1 million
 
         let total = price.mul_i64(quantity).unwrap();
-        assert_eq!(total, D64::from_str("10000.00").unwrap());
+        assert_eq!(total, D64::from_str_exact("10000.00").unwrap());
     }
 
     #[test]
     fn test_try_mul_i64_success() {
-        let price = D64::from_str("5.25").unwrap();
+        let price = D64::from_str_exact("5.25").unwrap();
         let total = price.try_mul_i64(10).unwrap();
-        assert_eq!(total, D64::from_str("52.50").unwrap());
+        assert_eq!(total, D64::from_str_exact("52.50").unwrap());
     }
 
     #[test]
@@ -2567,9 +2612,9 @@ mod mul_i64_tests {
 
     #[test]
     fn test_mul_i64_fractional_result() {
-        let price = D64::from_str("3.333333").unwrap();
+        let price = D64::from_str_exact("3.333333").unwrap();
         let total = price.mul_i64(3).unwrap();
-        assert_eq!(total, D64::from_str("9.999999").unwrap());
+        assert_eq!(total, D64::from_str_exact("9.999999").unwrap());
     }
 }
 
@@ -2583,34 +2628,34 @@ mod fixed_point_str_tests {
     fn test_from_fixed_point_str_2_decimals() {
         // Common for currencies: "12345" with 2 decimals → 123.45
         let d = D64::from_fixed_point_str("12345", 2).unwrap();
-        assert_eq!(d, D64::from_str("123.45").unwrap());
+        assert_eq!(d, D64::from_str_exact("123.45").unwrap());
     }
 
     #[test]
     fn test_from_fixed_point_str_0_decimals() {
         // No decimals: "123" with 0 decimals → 123.00
         let d = D64::from_fixed_point_str("123", 0).unwrap();
-        assert_eq!(d, D64::from_str("123").unwrap());
+        assert_eq!(d, D64::from_str_exact("123").unwrap());
     }
 
     #[test]
     fn test_from_fixed_point_str_8_decimals() {
         // All decimals: "12345678" with 8 decimals → 0.12345678
         let d = D64::from_fixed_point_str("12345678", 8).unwrap();
-        assert_eq!(d, D64::from_str("0.12345678").unwrap());
+        assert_eq!(d, D64::from_str_exact("0.12345678").unwrap());
     }
 
     #[test]
     fn test_from_fixed_point_str_4_decimals() {
         // Mid-range: "1234567" with 4 decimals → 123.4567
         let d = D64::from_fixed_point_str("1234567", 4).unwrap();
-        assert_eq!(d, D64::from_str("123.4567").unwrap());
+        assert_eq!(d, D64::from_str_exact("123.4567").unwrap());
     }
 
     #[test]
     fn test_from_fixed_point_str_negative() {
         let d = D64::from_fixed_point_str("-12345", 2).unwrap();
-        assert_eq!(d, D64::from_str("-123.45").unwrap());
+        assert_eq!(d, D64::from_str_exact("-123.45").unwrap());
     }
 
     #[test]
@@ -2623,7 +2668,7 @@ mod fixed_point_str_tests {
     fn test_from_fixed_point_str_leading_zeros() {
         // "00123" with 2 decimals → 1.23
         let d = D64::from_fixed_point_str("00123", 2).unwrap();
-        assert_eq!(d, D64::from_str("1.23").unwrap());
+        assert_eq!(d, D64::from_str_exact("1.23").unwrap());
     }
 
     #[test]
@@ -2651,7 +2696,7 @@ mod fixed_point_str_tests {
     fn test_from_fixed_point_str_fix_protocol() {
         // FIX protocol often uses 5 decimals for prices
         let d = D64::from_fixed_point_str("10050000", 5).unwrap();
-        assert_eq!(d, D64::from_str("100.50000").unwrap());
+        assert_eq!(d, D64::from_str_exact("100.50000").unwrap());
     }
 }
 
@@ -2663,7 +2708,7 @@ mod basis_points_tests {
     fn test_from_basis_points_basic() {
         // 100 bps = 1%
         let d = D64::from_basis_points(100).unwrap();
-        assert_eq!(d, D64::from_str("0.01").unwrap());
+        assert_eq!(d, D64::from_str_exact("0.01").unwrap());
     }
 
     #[test]
@@ -2676,34 +2721,34 @@ mod basis_points_tests {
     fn test_from_basis_points_one() {
         // 1 bp = 0.0001
         let d = D64::from_basis_points(1).unwrap();
-        assert_eq!(d, D64::from_str("0.0001").unwrap());
+        assert_eq!(d, D64::from_str_exact("0.0001").unwrap());
     }
 
     #[test]
     fn test_from_basis_points_50() {
         // 50 bps = 0.5%
         let d = D64::from_basis_points(50).unwrap();
-        assert_eq!(d, D64::from_str("0.005").unwrap());
+        assert_eq!(d, D64::from_str_exact("0.005").unwrap());
     }
 
     #[test]
     fn test_from_basis_points_10000() {
         // 10000 bps = 100%
         let d = D64::from_basis_points(10000).unwrap();
-        assert_eq!(d, D64::from_str("1").unwrap());
+        assert_eq!(d, D64::from_str_exact("1").unwrap());
     }
 
     #[test]
     fn test_from_basis_points_negative() {
         // -25 bps
         let d = D64::from_basis_points(-25).unwrap();
-        assert_eq!(d, D64::from_str("-0.0025").unwrap());
+        assert_eq!(d, D64::from_str_exact("-0.0025").unwrap());
     }
 
     #[test]
     fn test_to_basis_points_basic() {
         // 1% = 100 bps
-        let d = D64::from_str("0.01").unwrap();
+        let d = D64::from_str_exact("0.01").unwrap();
         assert_eq!(d.to_basis_points(), 100);
     }
 
@@ -2714,26 +2759,26 @@ mod basis_points_tests {
 
     #[test]
     fn test_to_basis_points_one() {
-        let d = D64::from_str("0.0001").unwrap();
+        let d = D64::from_str_exact("0.0001").unwrap();
         assert_eq!(d.to_basis_points(), 1);
     }
 
     #[test]
     fn test_to_basis_points_50() {
-        let d = D64::from_str("0.005").unwrap();
+        let d = D64::from_str_exact("0.005").unwrap();
         assert_eq!(d.to_basis_points(), 50);
     }
 
     #[test]
     fn test_to_basis_points_negative() {
-        let d = D64::from_str("-0.0025").unwrap();
+        let d = D64::from_str_exact("-0.0025").unwrap();
         assert_eq!(d.to_basis_points(), -25);
     }
 
     #[test]
     fn test_to_basis_points_fractional_truncates() {
         // 0.00015 = 1.5 bps, truncates to 1
-        let d = D64::from_str("0.00015").unwrap();
+        let d = D64::from_str_exact("0.00015").unwrap();
         assert_eq!(d.to_basis_points(), 1);
     }
 
@@ -2749,16 +2794,16 @@ mod basis_points_tests {
     fn test_basis_points_interest_rate() {
         // Fed funds rate move of 25 bps
         let rate_change = D64::from_basis_points(25).unwrap();
-        let old_rate = D64::from_str("5.25").unwrap(); // 5.25%
+        let old_rate = D64::from_str_exact("5.25").unwrap(); // 5.25%
         let new_rate = old_rate + rate_change;
-        assert_eq!(new_rate, D64::from_str("5.2525").unwrap());
+        assert_eq!(new_rate, D64::from_str_exact("5.2525").unwrap());
     }
 
     #[test]
     fn test_basis_points_spread() {
         // Credit spread of 150 bps over treasuries
         let spread = D64::from_basis_points(150).unwrap();
-        assert_eq!(spread, D64::from_str("0.015").unwrap());
+        assert_eq!(spread, D64::from_str_exact("0.015").unwrap());
     }
 
     #[test]
@@ -2819,7 +2864,7 @@ mod byte_tests {
 
     #[test]
     fn test_round_trip_ne() {
-        let original = D64::from_str("123.45678").unwrap();
+        let original = D64::from_str_exact("123.45678").unwrap();
         let bytes = original.to_ne_bytes();
         let restored = D64::from_ne_bytes(bytes);
         assert_eq!(original, restored);
@@ -2844,7 +2889,7 @@ mod buffer_tests {
 
     #[test]
     fn test_write_read_le_bytes() {
-        let d = D64::from_str("123.45").unwrap();
+        let d = D64::from_str_exact("123.45").unwrap();
         let mut buf = [0u8; 16];
 
         d.write_le_bytes(&mut buf[4..]);
@@ -2855,7 +2900,7 @@ mod buffer_tests {
 
     #[test]
     fn test_write_read_be_bytes() {
-        let d = D64::from_str("-987.654321").unwrap();
+        let d = D64::from_str_exact("-987.654321").unwrap();
         let mut buf = [0u8; 20];
 
         d.write_be_bytes(&mut buf[8..]);
@@ -2909,7 +2954,7 @@ mod buffer_tests {
 
     #[test]
     fn test_try_read_le_bytes_success() {
-        let d = D64::from_str("42.42").unwrap();
+        let d = D64::from_str_exact("42.42").unwrap();
         let bytes = d.to_le_bytes();
 
         assert_eq!(D64::try_read_le_bytes(&bytes), Some(d));
@@ -2924,9 +2969,9 @@ mod buffer_tests {
     #[test]
     fn test_multiple_writes_to_buffer() {
         let prices = [
-            D64::from_str("100.50").unwrap(),
-            D64::from_str("200.75").unwrap(),
-            D64::from_str("300.25").unwrap(),
+            D64::from_str_exact("100.50").unwrap(),
+            D64::from_str_exact("200.75").unwrap(),
+            D64::from_str_exact("300.25").unwrap(),
         ];
 
         let mut buf = [0u8; 24];
@@ -3016,28 +3061,28 @@ mod utf8_bytes_tests {
     fn test_from_utf8_bytes_integer() {
         let bytes = b"123";
         let d = D64::from_utf8_bytes(bytes).unwrap();
-        assert_eq!(d, D64::from_str("123").unwrap());
+        assert_eq!(d, D64::from_str_exact("123").unwrap());
     }
 
     #[test]
     fn test_from_utf8_bytes_decimal() {
         let bytes = b"123.45";
         let d = D64::from_utf8_bytes(bytes).unwrap();
-        assert_eq!(d, D64::from_str("123.45").unwrap());
+        assert_eq!(d, D64::from_str_exact("123.45").unwrap());
     }
 
     #[test]
     fn test_from_utf8_bytes_negative() {
         let bytes = b"-987.654321";
         let d = D64::from_utf8_bytes(bytes).unwrap();
-        assert_eq!(d, D64::from_str("-987.654321").unwrap());
+        assert_eq!(d, D64::from_str_exact("-987.654321").unwrap());
     }
 
     #[test]
     fn test_from_utf8_bytes_with_whitespace() {
         let bytes = b"  42.42  ";
         let d = D64::from_utf8_bytes(bytes).unwrap();
-        assert_eq!(d, D64::from_str("42.42").unwrap());
+        assert_eq!(d, D64::from_str_exact("42.42").unwrap());
     }
 
     #[test]
@@ -3075,7 +3120,7 @@ mod utf8_bytes_tests {
         let price_bytes = &packet[6..12]; // "100.50"
 
         let price = D64::from_utf8_bytes(price_bytes).unwrap();
-        assert_eq!(price, D64::from_str("100.50").unwrap());
+        assert_eq!(price, D64::from_str_exact("100.50").unwrap());
     }
 }
 
@@ -3085,34 +3130,34 @@ mod percentage_tests {
 
     #[test]
     fn test_percent_of_basic() {
-        let amount = D64::from_str("1000").unwrap();
-        let percent = D64::from_str("5").unwrap(); // 5%
+        let amount = D64::from_str_exact("1000").unwrap();
+        let percent = D64::from_str_exact("5").unwrap(); // 5%
 
         let result = amount.percent_of(percent).unwrap();
-        assert_eq!(result, D64::from_str("50").unwrap()); // 5% of 1000 = 50
+        assert_eq!(result, D64::from_str_exact("50").unwrap()); // 5% of 1000 = 50
     }
 
     #[test]
     fn test_percent_of_decimal() {
-        let amount = D64::from_str("250.50").unwrap();
-        let percent = D64::from_str("10").unwrap(); // 10%
+        let amount = D64::from_str_exact("250.50").unwrap();
+        let percent = D64::from_str_exact("10").unwrap(); // 10%
 
         let result = amount.percent_of(percent).unwrap();
-        assert_eq!(result, D64::from_str("25.05").unwrap()); // 10% of 250.50 = 25.05
+        assert_eq!(result, D64::from_str_exact("25.05").unwrap()); // 10% of 250.50 = 25.05
     }
 
     #[test]
     fn test_percent_of_fractional_percent() {
-        let amount = D64::from_str("1000").unwrap();
-        let percent = D64::from_str("2.5").unwrap(); // 2.5%
+        let amount = D64::from_str_exact("1000").unwrap();
+        let percent = D64::from_str_exact("2.5").unwrap(); // 2.5%
 
         let result = amount.percent_of(percent).unwrap();
-        assert_eq!(result, D64::from_str("25").unwrap()); // 2.5% of 1000 = 25
+        assert_eq!(result, D64::from_str_exact("25").unwrap()); // 2.5% of 1000 = 25
     }
 
     #[test]
     fn test_percent_of_zero() {
-        let amount = D64::from_str("1000").unwrap();
+        let amount = D64::from_str_exact("1000").unwrap();
         let percent = D64::ZERO;
 
         let result = amount.percent_of(percent).unwrap();
@@ -3121,26 +3166,26 @@ mod percentage_tests {
 
     #[test]
     fn test_percent_of_hundred() {
-        let amount = D64::from_str("500").unwrap();
-        let percent = D64::from_str("100").unwrap(); // 100%
+        let amount = D64::from_str_exact("500").unwrap();
+        let percent = D64::from_str_exact("100").unwrap(); // 100%
 
         let result = amount.percent_of(percent).unwrap();
-        assert_eq!(result, D64::from_str("500").unwrap()); // 100% of 500 = 500
+        assert_eq!(result, D64::from_str_exact("500").unwrap()); // 100% of 500 = 500
     }
 
     #[test]
     fn test_percent_of_negative_amount() {
-        let amount = D64::from_str("-1000").unwrap();
-        let percent = D64::from_str("5").unwrap();
+        let amount = D64::from_str_exact("-1000").unwrap();
+        let percent = D64::from_str_exact("5").unwrap();
 
         let result = amount.percent_of(percent).unwrap();
-        assert_eq!(result, D64::from_str("-50").unwrap());
+        assert_eq!(result, D64::from_str_exact("-50").unwrap());
     }
 
     #[test]
     fn test_percent_of_overflow() {
         let amount = D64::MAX;
-        let percent = D64::from_str("200").unwrap();
+        let percent = D64::from_str_exact("200").unwrap();
 
         let result = amount.percent_of(percent);
         assert!(result.is_none());
@@ -3148,34 +3193,34 @@ mod percentage_tests {
 
     #[test]
     fn test_add_percent_basic() {
-        let amount = D64::from_str("1000").unwrap();
-        let percent = D64::from_str("5").unwrap(); // Add 5%
+        let amount = D64::from_str_exact("1000").unwrap();
+        let percent = D64::from_str_exact("5").unwrap(); // Add 5%
 
         let result = amount.add_percent(percent).unwrap();
-        assert_eq!(result, D64::from_str("1050").unwrap()); // 1000 + 5% = 1050
+        assert_eq!(result, D64::from_str_exact("1050").unwrap()); // 1000 + 5% = 1050
     }
 
     #[test]
     fn test_add_percent_decimal() {
-        let amount = D64::from_str("200").unwrap();
-        let percent = D64::from_str("10").unwrap(); // Add 10%
+        let amount = D64::from_str_exact("200").unwrap();
+        let percent = D64::from_str_exact("10").unwrap(); // Add 10%
 
         let result = amount.add_percent(percent).unwrap();
-        assert_eq!(result, D64::from_str("220").unwrap()); // 200 + 10% = 220
+        assert_eq!(result, D64::from_str_exact("220").unwrap()); // 200 + 10% = 220
     }
 
     #[test]
     fn test_add_percent_fractional() {
-        let amount = D64::from_str("1000").unwrap();
-        let percent = D64::from_str("2.5").unwrap(); // Add 2.5%
+        let amount = D64::from_str_exact("1000").unwrap();
+        let percent = D64::from_str_exact("2.5").unwrap(); // Add 2.5%
 
         let result = amount.add_percent(percent).unwrap();
-        assert_eq!(result, D64::from_str("1025").unwrap()); // 1000 + 2.5% = 1025
+        assert_eq!(result, D64::from_str_exact("1025").unwrap()); // 1000 + 2.5% = 1025
     }
 
     #[test]
     fn test_add_percent_zero() {
-        let amount = D64::from_str("1000").unwrap();
+        let amount = D64::from_str_exact("1000").unwrap();
         let percent = D64::ZERO;
 
         let result = amount.add_percent(percent).unwrap();
@@ -3184,26 +3229,26 @@ mod percentage_tests {
 
     #[test]
     fn test_add_percent_negative() {
-        let amount = D64::from_str("1000").unwrap();
-        let percent = D64::from_str("-10").unwrap(); // Subtract 10%
+        let amount = D64::from_str_exact("1000").unwrap();
+        let percent = D64::from_str_exact("-10").unwrap(); // Subtract 10%
 
         let result = amount.add_percent(percent).unwrap();
-        assert_eq!(result, D64::from_str("900").unwrap()); // 1000 - 10% = 900
+        assert_eq!(result, D64::from_str_exact("900").unwrap()); // 1000 - 10% = 900
     }
 
     #[test]
     fn test_add_percent_negative_amount() {
-        let amount = D64::from_str("-1000").unwrap();
-        let percent = D64::from_str("5").unwrap();
+        let amount = D64::from_str_exact("-1000").unwrap();
+        let percent = D64::from_str_exact("5").unwrap();
 
         let result = amount.add_percent(percent).unwrap();
-        assert_eq!(result, D64::from_str("-1050").unwrap());
+        assert_eq!(result, D64::from_str_exact("-1050").unwrap());
     }
 
     #[test]
     fn test_add_percent_overflow() {
         let amount = D64::MAX;
-        let percent = D64::from_str("50").unwrap();
+        let percent = D64::from_str_exact("50").unwrap();
 
         let result = amount.add_percent(percent);
         assert!(result.is_none());
@@ -3211,43 +3256,43 @@ mod percentage_tests {
 
     #[test]
     fn test_add_percent_hundred() {
-        let amount = D64::from_str("500").unwrap();
-        let percent = D64::from_str("100").unwrap(); // Add 100% = double
+        let amount = D64::from_str_exact("500").unwrap();
+        let percent = D64::from_str_exact("100").unwrap(); // Add 100% = double
 
         let result = amount.add_percent(percent).unwrap();
-        assert_eq!(result, D64::from_str("1000").unwrap());
+        assert_eq!(result, D64::from_str_exact("1000").unwrap());
     }
 
     #[test]
     fn test_percent_commission_calculation() {
         // Real-world example: $10,000 trade with 0.1% commission
-        let trade_value = D64::from_str("10000").unwrap();
-        let commission_rate = D64::from_str("0.1").unwrap();
+        let trade_value = D64::from_str_exact("10000").unwrap();
+        let commission_rate = D64::from_str_exact("0.1").unwrap();
 
         let commission = trade_value.percent_of(commission_rate).unwrap();
-        assert_eq!(commission, D64::from_str("10").unwrap());
+        assert_eq!(commission, D64::from_str_exact("10").unwrap());
     }
 
     #[test]
     fn test_percent_tax_calculation() {
         // Real-world example: $99.99 item with 8.5% tax
-        let price = D64::from_str("99.99").unwrap();
-        let tax_rate = D64::from_str("8.5").unwrap();
+        let price = D64::from_str_exact("99.99").unwrap();
+        let tax_rate = D64::from_str_exact("8.5").unwrap();
 
         let total = price.add_percent(tax_rate).unwrap();
         // 99.99 * 1.085 = 108.48915
         // Rounded to 2 decimal places (cents) = 108.49
-        assert_eq!(total.round_dp(2), D64::from_str("108.49").unwrap());
+        assert_eq!(total.round_dp(2), D64::from_str_exact("108.49").unwrap());
     }
 
     #[test]
     fn test_percent_discount_calculation() {
         // Real-world example: $299 item with 15% discount
-        let price = D64::from_str("299").unwrap();
-        let discount_rate = D64::from_str("-15").unwrap(); // Negative for discount
+        let price = D64::from_str_exact("299").unwrap();
+        let discount_rate = D64::from_str_exact("-15").unwrap(); // Negative for discount
 
         let final_price = price.add_percent(discount_rate).unwrap();
-        assert_eq!(final_price, D64::from_str("254.15").unwrap());
+        assert_eq!(final_price, D64::from_str_exact("254.15").unwrap());
     }
 }
 
