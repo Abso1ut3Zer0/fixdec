@@ -272,6 +272,211 @@ impl D96 {
     pub const fn to_basis_points(self) -> i128 {
         (self.value * 10_000) / Self::SCALE
     }
+
+    /// Creates a D96 from a mantissa and scale (like rust_decimal).
+    ///
+    /// The scale represents the number of decimal places.
+    /// For example: `with_scale(12345, 2)` = 123.45
+    ///
+    /// # Panics
+    ///
+    /// Panics if:
+    /// - The scale is greater than 12 (our max precision)
+    /// - The resulting value is out of bounds for D96
+    #[inline]
+    pub fn with_scale(mantissa: i128, scale: u32) -> Self {
+        assert!(
+            scale <= Self::DECIMALS as u32,
+            "scale exceeds D96 precision (max 12 decimals)"
+        );
+
+        let scale_diff = Self::DECIMALS as u32 - scale;
+
+        if scale_diff == 0 {
+            Self { value: mantissa }
+        } else {
+            let multiplier = const_pow10_i128(scale_diff as u8);
+
+            match mantissa.checked_mul(multiplier) {
+                Some(value) => Self { value },
+                None => panic!("overflow: mantissa * 10^{} exceeds D96 range", scale_diff),
+            }
+        }
+    }
+
+    /// Creates a D96 from a mantissa and scale, returning None on error.
+    ///
+    /// Like `with_scale` but returns None instead of panicking.
+    #[inline]
+    pub const fn try_with_scale(mantissa: i128, scale: u32) -> Option<Self> {
+        if scale > Self::DECIMALS as u32 {
+            return None;
+        }
+
+        let scale_diff = Self::DECIMALS as u32 - scale;
+
+        if scale_diff == 0 {
+            Some(Self { value: mantissa })
+        } else {
+            let multiplier = const_pow10_i128(scale_diff as u8);
+
+            match mantissa.checked_mul(multiplier) {
+                Some(value) => Some(Self { value }),
+                None => None,
+            }
+        }
+    }
+
+    /// Creates a D96 from a mantissa and scale, rounding if necessary.
+    ///
+    /// If the scale is greater than 12, the mantissa will be divided by 10^(scale-12)
+    /// to fit our precision, rounding to the nearest even number (banker's rounding).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resulting value (after rounding) is out of bounds for D96.
+    #[inline]
+    pub fn with_scale_lossy(mantissa: i128, scale: u32) -> Self {
+        if scale <= Self::DECIMALS as u32 {
+            // Fast path: no rounding needed
+            let scale_diff = Self::DECIMALS as u32 - scale;
+
+            if scale_diff == 0 {
+                Self { value: mantissa }
+            } else {
+                let multiplier = const_pow10_i128(scale_diff as u8);
+                match mantissa.checked_mul(multiplier) {
+                    Some(value) => Self { value },
+                    None => panic!("overflow: mantissa * 10^{} exceeds D96 range", scale_diff),
+                }
+            }
+        } else {
+            // Need to round: divide by 10^(scale - 12)
+            let scale_diff = scale - Self::DECIMALS as u32;
+
+            // For very large scale differences, repeatedly divide by manageable powers
+            let mut result = mantissa;
+            let mut remaining_scale = scale_diff;
+
+            // Divide by 10^12 repeatedly for very large scales
+            while remaining_scale >= 12 {
+                result /= 1_000_000_000_000;
+                remaining_scale -= 12;
+
+                // Early exit if we've already rounded to 0
+                if result == 0 {
+                    return Self::ZERO;
+                }
+            }
+
+            // Handle remaining scale (0-11)
+            if remaining_scale == 0 {
+                Self { value: result }
+            } else {
+                let divisor = const_pow10_i128(remaining_scale as u8);
+
+                let quotient = result / divisor;
+                let remainder = result % divisor;
+
+                // Banker's rounding
+                let half = divisor / 2;
+                let rounded = if remainder.abs() > half {
+                    // Round away from zero
+                    if result >= 0 {
+                        quotient + 1
+                    } else {
+                        quotient - 1
+                    }
+                } else if remainder.abs() == half {
+                    // Exactly half - round to even
+                    if quotient % 2 == 0 {
+                        quotient
+                    } else {
+                        if result >= 0 {
+                            quotient + 1
+                        } else {
+                            quotient - 1
+                        }
+                    }
+                } else {
+                    quotient
+                };
+
+                Self { value: rounded }
+            }
+        }
+    }
+
+    /// Creates a D96 from a mantissa and scale, rounding if necessary, returns None on error.
+    ///
+    /// Like `with_scale_lossy` but returns None instead of panicking on overflow.
+    #[inline]
+    pub const fn try_with_scale_lossy(mantissa: i128, scale: u32) -> Option<Self> {
+        if scale <= Self::DECIMALS as u32 {
+            // Fast path: no rounding needed
+            let scale_diff = Self::DECIMALS as u32 - scale;
+
+            if scale_diff == 0 {
+                Some(Self { value: mantissa })
+            } else {
+                let multiplier = const_pow10_i128(scale_diff as u8);
+                match mantissa.checked_mul(multiplier) {
+                    Some(value) => Some(Self { value }),
+                    None => None,
+                }
+            }
+        } else {
+            // Need to round: divide by 10^(scale - 12)
+            let scale_diff = scale - Self::DECIMALS as u32;
+
+            // For very large scale differences, repeatedly divide
+            let mut result = mantissa;
+            let mut remaining_scale = scale_diff;
+
+            while remaining_scale >= 12 {
+                result /= 1_000_000_000_000;
+                remaining_scale -= 12;
+
+                if result == 0 {
+                    return Some(Self::ZERO);
+                }
+            }
+
+            // Handle remaining scale (0-11)
+            if remaining_scale == 0 {
+                Some(Self { value: result })
+            } else {
+                let divisor = const_pow10_i128(remaining_scale as u8);
+
+                let quotient = result / divisor;
+                let remainder = result % divisor;
+
+                // Banker's rounding
+                let half = divisor / 2;
+                let rounded = if remainder.abs() > half {
+                    if result >= 0 {
+                        quotient + 1
+                    } else {
+                        quotient - 1
+                    }
+                } else if remainder.abs() == half {
+                    if quotient % 2 == 0 {
+                        quotient
+                    } else {
+                        if result >= 0 {
+                            quotient + 1
+                        } else {
+                            quotient - 1
+                        }
+                    }
+                } else {
+                    quotient
+                };
+
+                Some(Self { value: rounded })
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -2682,6 +2887,8 @@ const fn isqrt_u128(n: u128) -> u128 {
 
 #[cfg(test)]
 mod tests {
+    use std::string::ToString;
+
     use super::*;
 
     #[test]
@@ -2777,6 +2984,156 @@ mod tests {
         assert_eq!(D96::ONE.signum(), 1);
         assert_eq!(D96::ZERO.signum(), 0);
         assert_eq!(D96::from_raw(-1_000_000_000_000).signum(), -1);
+    }
+
+    // with_scale tests
+    #[test]
+    fn test_d96_with_scale_basic() {
+        let d = D96::with_scale(12345, 2);
+        assert_eq!(d, D96::from_str_exact("123.45").unwrap());
+    }
+
+    #[test]
+    fn test_d96_with_scale_zero_scale() {
+        let d = D96::with_scale(123, 0);
+        assert_eq!(d, D96::from_str_exact("123").unwrap());
+    }
+
+    #[test]
+    fn test_d96_with_scale_full_precision() {
+        let d = D96::with_scale(1_000_000_000_000, 12);
+        assert_eq!(d, D96::ONE);
+    }
+
+    #[test]
+    fn test_d96_with_scale_negative() {
+        let d = D96::with_scale(-12345, 2);
+        assert_eq!(d, D96::from_str_exact("-123.45").unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "scale exceeds D96 precision")]
+    fn test_d96_with_scale_panic_too_precise() {
+        let _ = D96::with_scale(1234567890123456, 13);
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn test_d96_with_scale_panic_overflow() {
+        let _ = D96::with_scale(i128::MAX, 0);
+    }
+
+    // try_with_scale tests
+    #[test]
+    fn test_d96_try_with_scale_success() {
+        let d = D96::try_with_scale(12345, 2).unwrap();
+        assert_eq!(d, D96::from_str_exact("123.45").unwrap());
+    }
+
+    #[test]
+    fn test_d96_try_with_scale_too_precise() {
+        assert!(D96::try_with_scale(1234567890123456, 13).is_none());
+    }
+
+    #[test]
+    fn test_d96_try_with_scale_overflow() {
+        assert!(D96::try_with_scale(i128::MAX, 0).is_none());
+    }
+
+    // with_scale_lossy tests
+    #[test]
+    fn test_d96_lossy_exact() {
+        let d = D96::with_scale_lossy(12345, 2);
+        assert_eq!(d, D96::from_str_exact("123.45").unwrap());
+    }
+
+    #[test]
+    fn test_d96_lossy_rounds_down() {
+        // 0.1234567890124 with 13 decimals -> 0.123456789012
+        let d = D96::with_scale_lossy(1234567890124, 13);
+        assert_eq!(d, D96::from_str_exact("0.123456789012").unwrap());
+    }
+
+    #[test]
+    fn test_d96_lossy_rounds_up() {
+        // 0.1234567890126 with 13 decimals -> 0.123456789013
+        let d = D96::with_scale_lossy(1234567890126, 13);
+        assert_eq!(d, D96::from_str_exact("0.123456789013").unwrap());
+    }
+
+    #[test]
+    fn test_d96_lossy_bankers_rounding_even() {
+        // 0.1234567890125 -> round to even (0.123456789012)
+        let d = D96::with_scale_lossy(1234567890125, 13);
+        assert_eq!(d, D96::from_str_exact("0.123456789012").unwrap());
+    }
+
+    #[test]
+    fn test_d96_lossy_bankers_rounding_odd() {
+        // 0.1234567890135 -> round to even (0.123456789014)
+        let d = D96::with_scale_lossy(1234567890135, 13);
+        assert_eq!(d, D96::from_str_exact("0.123456789014").unwrap());
+    }
+
+    #[test]
+    fn test_d96_lossy_large_scale() {
+        // 1 with scale 30 should round to 0
+        let d = D96::with_scale_lossy(1, 30);
+        assert_eq!(d, D96::ZERO);
+    }
+
+    #[test]
+    fn test_d96_lossy_ethereum_wei() {
+        // 1 wei = 10^-18 ETH, D96 supports 10^-12, so 1 wei rounds to 0
+        let d = D96::with_scale_lossy(1, 18);
+        assert_eq!(d, D96::ZERO);
+
+        // 1 million wei = 10^-12 ETH, fits exactly in D96
+        let d = D96::with_scale_lossy(1_000_000, 18);
+        assert_eq!(d, D96::from_str_exact("0.000000000001").unwrap());
+    }
+
+    #[test]
+    fn test_d96_lossy_negative() {
+        let d = D96::with_scale_lossy(-1234567890126, 13);
+        assert_eq!(d, D96::from_str_exact("-0.123456789013").unwrap());
+    }
+
+    // try_with_scale_lossy tests
+    #[test]
+    fn test_d96_try_lossy_success() {
+        let d = D96::try_with_scale_lossy(1234567890126, 13).unwrap();
+        assert_eq!(d, D96::from_str_exact("0.123456789013").unwrap());
+    }
+
+    #[test]
+    fn test_d96_try_lossy_overflow() {
+        // Even with rounding, i128::MAX at scale 0 is too large for 96-bit
+        assert!(D96::try_with_scale_lossy(i128::MAX, 0).is_none());
+    }
+
+    #[test]
+    fn test_d96_try_lossy_very_large_scale() {
+        let d = D96::try_with_scale_lossy(1, 50).unwrap();
+        assert_eq!(d, D96::ZERO);
+    }
+
+    // Compatibility with rust_decimal patterns
+    #[test]
+    fn test_d96_rust_decimal_compat() {
+        // rust_decimal::Decimal::new(12345, 2) equivalent
+        let d = D96::with_scale(12345, 2);
+        assert_eq!(d.to_string(), "123.45");
+    }
+
+    #[test]
+    fn test_d96_rust_decimal_max_precision() {
+        // rust_decimal supports up to 28 decimals, we support 12
+        // This tests lossy conversion from rust_decimal's precision
+        let mantissa = 1234567890123456789012345678i128;
+        let d = D96::with_scale_lossy(mantissa, 28);
+        // Should round to something reasonable
+        assert!(d != D96::ZERO);
     }
 }
 
