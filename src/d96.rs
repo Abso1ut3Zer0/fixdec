@@ -1449,7 +1449,8 @@ impl D96 {
             return None;
         }
 
-        // 96-bit range: ~39.6 trillion
+        // Check against 96-bit range: ~39.6 trillion
+        // In float terms: ±39_614_081_257_132
         if value.abs() > 39_614_081_257_132.0 {
             return None;
         }
@@ -1461,9 +1462,14 @@ impl D96 {
             return None;
         }
 
-        Some(Self {
-            value: scaled.round() as i128,
-        })
+        let result = scaled.round() as i128;
+
+        // CRITICAL: Final 96-bit bounds check
+        if result > Self::MAX.value || result < Self::MIN.value {
+            return None;
+        }
+
+        Some(Self { value: result })
     }
 
     /// Converts to f64.
@@ -1553,7 +1559,7 @@ impl D96 {
         let bytes = s.as_bytes();
         let len = bytes.len();
 
-        // Fast path: check for negative
+        // Parse sign
         let (is_negative, start_pos) = match bytes[0] {
             b'-' => (true, 1),
             b'+' => (false, 1),
@@ -1624,7 +1630,6 @@ impl D96 {
             // Scale up to 12 decimals
             let remaining_digits = Self::DECIMALS as usize - frac_len;
 
-            // Use const lookup for common cases
             const POWERS: [u128; 13] = [
                 1,
                 10,
@@ -1661,7 +1666,7 @@ impl D96 {
             abs_value
         };
 
-        // Check 96-bit bounds
+        // CRITICAL: Check 96-bit bounds
         if value > Self::MAX.value || value < Self::MIN.value {
             return Err(DecimalError::Overflow);
         }
@@ -1684,67 +1689,12 @@ impl D96 {
             .checked_mul(multiplier)
             .ok_or(DecimalError::Overflow)?;
 
-        // Check 96-bit bounds
+        // CRITICAL: Check 96-bit bounds
         if scaled > Self::MAX.value || scaled < Self::MIN.value {
             return Err(DecimalError::Overflow);
         }
 
         Ok(Self { value: scaled })
-    }
-
-    // Helper for precision formatting
-    fn fmt_with_precision(
-        &self,
-        f: &mut core::fmt::Formatter<'_>,
-        precision: usize,
-    ) -> core::fmt::Result {
-        // Special case: zero with any precision should just be "0"
-        if self.value == 0 {
-            return f.write_str("0");
-        }
-
-        if precision >= Self::DECIMALS as usize {
-            // Just display what we have
-            if self.value < 0 {
-                write!(f, "-{}", self.value.unsigned_abs() / Self::SCALE as u128)?;
-            } else {
-                write!(f, "{}", self.value.unsigned_abs() / Self::SCALE as u128)?;
-            }
-            let frac = self.value.unsigned_abs() % Self::SCALE as u128;
-            if frac > 0 {
-                write!(f, ".{:012}", frac)?;
-            }
-            return Ok(());
-        }
-
-        // Round to requested precision
-        let abs_value = self.value.unsigned_abs();
-        let scale_down = Self::DECIMALS as u32 - precision as u32;
-        let divisor = 10u128.pow(scale_down);
-        let scaled_value = abs_value / divisor;
-        let remainder = abs_value % divisor;
-
-        let rounded_value = if remainder >= (divisor + 1) / 2 {
-            scaled_value + 1
-        } else {
-            scaled_value
-        };
-
-        let precision_scale = 10u128.pow(precision as u32);
-        let int_part = rounded_value / precision_scale;
-        let frac_part = rounded_value % precision_scale;
-
-        if self.value < 0 {
-            write!(f, "-{}", int_part)?;
-        } else {
-            write!(f, "{}", int_part)?;
-        }
-
-        if precision > 0 {
-            write!(f, ".{:0width$}", frac_part, width = precision)?;
-        }
-
-        Ok(())
     }
 }
 
@@ -1767,31 +1717,166 @@ impl D96 {
     /// Parse from byte slice
     pub fn from_utf8_bytes(bytes: &[u8]) -> crate::Result<Self> {
         let s = core::str::from_utf8(bytes).map_err(|_| DecimalError::InvalidFormat)?;
-        Self::from_str_exact(s)
+        Self::from_str_exact(s) // ✅ This will check bounds
     }
 
-    /// Creates a D96 from its representation as a byte array in big endian.
+    /// Read D96 from little-endian bytes
     #[inline(always)]
-    pub const fn from_be_bytes(bytes: [u8; 16]) -> Self {
-        Self {
-            value: i128::from_be_bytes(bytes),
-        }
+    pub const fn from_le_bytes(bytes: [u8; Self::BYTES]) -> Self {
+        let value = i128::from_le_bytes(bytes);
+
+        // Debug assertion to catch violations during development
+        assert!(
+            value <= Self::MAX.value && value >= Self::MIN.value,
+            "D96::from_le_bytes: value exceeds 96-bit range"
+        );
+
+        Self { value }
     }
 
-    /// Creates a D96 from its representation as a byte array in little endian.
+    /// Read D96 from big-endian bytes
     #[inline(always)]
-    pub const fn from_le_bytes(bytes: [u8; 16]) -> Self {
-        Self {
-            value: i128::from_le_bytes(bytes),
-        }
+    pub const fn from_be_bytes(bytes: [u8; Self::BYTES]) -> Self {
+        let value = i128::from_be_bytes(bytes);
+
+        // Debug assertion to catch violations during development
+        assert!(
+            value <= Self::MAX.value && value >= Self::MIN.value,
+            "D96::from_be_bytes: value exceeds 96-bit range"
+        );
+
+        Self { value }
     }
 
-    /// Creates a D96 from its representation as a byte array in native endian.
+    /// Read D96 from native-endian bytes
     #[inline(always)]
-    pub const fn from_ne_bytes(bytes: [u8; 16]) -> Self {
-        Self {
-            value: i128::from_ne_bytes(bytes),
+    pub const fn from_ne_bytes(bytes: [u8; Self::BYTES]) -> Self {
+        let value = i128::from_ne_bytes(bytes);
+
+        // Debug assertion to catch violations during development
+        assert!(
+            value <= Self::MAX.value && value >= Self::MIN.value,
+            "D96::from_ne_bytes: value exceeds 96-bit range"
+        );
+
+        Self { value }
+    }
+
+    /// Read D96 from a byte slice (little-endian)
+    #[inline(always)]
+    pub const fn read_le_bytes(bytes: &[u8]) -> Self {
+        assert!(bytes.len() >= Self::BYTES, "buffer too short");
+
+        let mut array = [0u8; Self::BYTES];
+        let mut i = 0;
+        while i < Self::BYTES {
+            array[i] = bytes[i];
+            i += 1;
         }
+
+        Self::from_le_bytes(array)
+    }
+
+    /// Read D96 from a byte slice (big-endian)
+    #[inline(always)]
+    pub const fn read_be_bytes(bytes: &[u8]) -> Self {
+        assert!(bytes.len() >= Self::BYTES, "buffer too short");
+
+        let mut array = [0u8; Self::BYTES];
+        let mut i = 0;
+        while i < Self::BYTES {
+            array[i] = bytes[i];
+            i += 1;
+        }
+
+        Self::from_be_bytes(array)
+    }
+
+    /// Read D96 from a byte slice (native-endian)
+    #[inline(always)]
+    pub const fn read_ne_bytes(bytes: &[u8]) -> Self {
+        assert!(bytes.len() >= Self::BYTES, "buffer too short");
+
+        let mut array = [0u8; Self::BYTES];
+        let mut i = 0;
+        while i < Self::BYTES {
+            array[i] = bytes[i];
+            i += 1;
+        }
+
+        Self::from_ne_bytes(array)
+    }
+
+    /// Try to read D96 from a byte slice (little-endian), checking bounds
+    #[inline(always)]
+    pub const fn try_read_le_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < Self::BYTES {
+            return None;
+        }
+
+        let mut array = [0u8; Self::BYTES];
+        let mut i = 0;
+        while i < Self::BYTES {
+            array[i] = bytes[i];
+            i += 1;
+        }
+
+        let value = i128::from_le_bytes(array);
+
+        // Check 96-bit bounds
+        if value > Self::MAX.value || value < Self::MIN.value {
+            return None;
+        }
+
+        Some(Self { value })
+    }
+
+    /// Try to read D96 from a byte slice (big-endian), checking bounds
+    #[inline(always)]
+    pub const fn try_read_be_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < Self::BYTES {
+            return None;
+        }
+
+        let mut array = [0u8; Self::BYTES];
+        let mut i = 0;
+        while i < Self::BYTES {
+            array[i] = bytes[i];
+            i += 1;
+        }
+
+        let value = i128::from_be_bytes(array);
+
+        // Check 96-bit bounds
+        if value > Self::MAX.value || value < Self::MIN.value {
+            return None;
+        }
+
+        Some(Self { value })
+    }
+
+    /// Try to read D96 from a byte slice (native-endian), checking bounds
+    #[inline(always)]
+    pub const fn try_read_ne_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < Self::BYTES {
+            return None;
+        }
+
+        let mut array = [0u8; Self::BYTES];
+        let mut i = 0;
+        while i < Self::BYTES {
+            array[i] = bytes[i];
+            i += 1;
+        }
+
+        let value = i128::from_ne_bytes(array);
+
+        // Check 96-bit bounds
+        if value > Self::MAX.value || value < Self::MIN.value {
+            return None;
+        }
+
+        Some(Self { value })
     }
 
     /// Returns the memory representation as a byte array in big-endian byte order.
@@ -1830,30 +1915,6 @@ impl D96 {
         buf[..16].copy_from_slice(&self.to_ne_bytes());
     }
 
-    /// Reads a decimal from bytes in little-endian order.
-    #[inline(always)]
-    pub fn read_le_bytes(buf: &[u8]) -> Self {
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&buf[..16]);
-        Self::from_le_bytes(bytes)
-    }
-
-    /// Reads a decimal from bytes in big-endian order.
-    #[inline(always)]
-    pub fn read_be_bytes(buf: &[u8]) -> Self {
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&buf[..16]);
-        Self::from_be_bytes(bytes)
-    }
-
-    /// Reads a decimal from bytes in native-endian order.
-    #[inline(always)]
-    pub fn read_ne_bytes(buf: &[u8]) -> Self {
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&buf[..16]);
-        Self::from_ne_bytes(bytes)
-    }
-
     /// Tries to write the decimal as bytes in little-endian order.
     #[inline(always)]
     pub fn try_write_le_bytes(&self, buf: &mut [u8]) -> Option<()> {
@@ -1882,39 +1943,6 @@ impl D96 {
         }
         buf[..16].copy_from_slice(&self.to_ne_bytes());
         Some(())
-    }
-
-    /// Tries to read a decimal from bytes in little-endian order.
-    #[inline(always)]
-    pub fn try_read_le_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 16 {
-            return None;
-        }
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&buf[..16]);
-        Some(Self::from_le_bytes(bytes))
-    }
-
-    /// Tries to read a decimal from bytes in big-endian order.
-    #[inline(always)]
-    pub fn try_read_be_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 16 {
-            return None;
-        }
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&buf[..16]);
-        Some(Self::from_be_bytes(bytes))
-    }
-
-    /// Tries to read a decimal from bytes in native-endian order.
-    #[inline(always)]
-    pub fn try_read_ne_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 16 {
-            return None;
-        }
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&buf[..16]);
-        Some(Self::from_ne_bytes(bytes))
     }
 }
 
@@ -2094,94 +2122,239 @@ impl From<u8> for D96 {
     }
 }
 
+impl D96 {
+    /// Format to a byte buffer, returns length written
+    /// Uses reciprocal multiplication for fast division by powers of 10
+    #[inline]
+    fn format_to_buffer(&self, buffer: &mut [u8]) -> usize {
+        let abs_value = self.value.unsigned_abs();
+        let integer_part = abs_value / Self::SCALE as u128;
+        let fractional_part = abs_value % Self::SCALE as u128;
+
+        let mut pos = 0;
+
+        // Sign
+        if self.value < 0 {
+            buffer[pos] = b'-';
+            pos += 1;
+        }
+
+        // Integer part
+        if integer_part == 0 {
+            buffer[pos] = b'0';
+            pos += 1;
+        } else {
+            pos += format_u128_reciprocal(integer_part, &mut buffer[pos..]);
+        }
+
+        // Fractional part
+        if fractional_part > 0 {
+            buffer[pos] = b'.';
+            pos += 1;
+
+            // Format fractional with trailing zero removal
+            pos += format_fractional_reciprocal(fractional_part, &mut buffer[pos..]);
+        }
+
+        pos
+    }
+
+    /// Format with specific precision (for fmt::Formatter precision)
+    #[inline]
+    fn fmt_with_precision(&self, f: &mut fmt::Formatter<'_>, precision: usize) -> fmt::Result {
+        let abs_value = self.value.unsigned_abs();
+        let integer_part = abs_value / Self::SCALE as u128;
+        let fractional_part = abs_value % Self::SCALE as u128;
+
+        let mut buffer = [0u8; 64];
+        let mut pos = 0;
+
+        // Sign
+        if self.value < 0 {
+            buffer[pos] = b'-';
+            pos += 1;
+        }
+
+        // Integer part
+        if integer_part == 0 {
+            buffer[pos] = b'0';
+            pos += 1;
+        } else {
+            pos += format_u128_reciprocal(integer_part, &mut buffer[pos..]);
+        }
+
+        // Fractional part with rounding
+        if precision > 0 {
+            buffer[pos] = b'.';
+            pos += 1;
+
+            let precision_capped = precision.min(Self::DECIMALS as usize);
+
+            // Scale fractional part and round
+            let scale_factor = const_pow10_u128((Self::DECIMALS as usize - precision_capped) as u8);
+            let scaled = fractional_part / scale_factor;
+            let remainder = fractional_part % scale_factor;
+
+            // Round half to even
+            let rounded = if remainder * 2 > scale_factor {
+                scaled + 1
+            } else if remainder * 2 == scale_factor {
+                // Banker's rounding: round to even
+                if scaled % 2 == 1 { scaled + 1 } else { scaled }
+            } else {
+                scaled
+            };
+
+            // Format the rounded fractional part with exactly precision_capped digits
+            pos += format_fractional_fixed_width(rounded, precision_capped, &mut buffer[pos..]);
+        }
+
+        let s = unsafe { core::str::from_utf8_unchecked(&buffer[..pos]) };
+        f.write_str(s)
+    }
+}
+
 impl fmt::Display for D96 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Handle precision separately
         if let Some(precision) = f.precision() {
             return self.fmt_with_precision(f, precision);
         }
-
-        // FAST PATH: Default formatting
 
         // Fast path for zero
         if self.value == 0 {
             return f.write_str("0");
         }
 
-        let abs_value = self.value.unsigned_abs();
-        let integer_part = abs_value / Self::SCALE as u128;
-        let fractional_part = abs_value % Self::SCALE as u128;
-
-        // Use a stack buffer - enough for "-39614081257132.168796771975167"
         let mut buffer = [0u8; 48];
-        let mut pos = 0;
-
-        // Write sign
-        if self.value < 0 {
-            buffer[pos] = b'-';
-            pos += 1;
-        }
-
-        // Write integer part
-        if integer_part == 0 {
-            buffer[pos] = b'0';
-            pos += 1;
-        } else {
-            let start = pos;
-            let mut n = integer_part;
-
-            while n > 0 {
-                buffer[pos] = b'0' + (n % 10) as u8;
-                n /= 10;
-                pos += 1;
-            }
-
-            buffer[start..pos].reverse();
-        }
-
-        // Handle fractional part
-        if fractional_part > 0 {
-            buffer[pos] = b'.';
-            pos += 1;
-
-            // Remove trailing zeros
-            let mut frac = fractional_part;
-            let mut num_zeros_removed = 0;
-            while frac % 10 == 0 {
-                frac /= 10;
-                num_zeros_removed += 1;
-            }
-
-            let digits_to_write = (Self::DECIMALS as usize) - num_zeros_removed;
-
-            if frac > 0 {
-                let mut temp_frac = frac;
-                let mut temp_pos = pos;
-
-                while temp_frac > 0 {
-                    buffer[temp_pos] = b'0' + (temp_frac % 10) as u8;
-                    temp_frac /= 10;
-                    temp_pos += 1;
-                }
-
-                buffer[pos..temp_pos].reverse();
-
-                let actual_digits = temp_pos - pos;
-                let leading_zeros = digits_to_write - actual_digits;
-
-                if leading_zeros > 0 {
-                    buffer.copy_within(pos..temp_pos, pos + leading_zeros);
-                    for i in 0..leading_zeros {
-                        buffer[pos + i] = b'0';
-                    }
-                }
-
-                pos = pos + digits_to_write;
-            }
-        }
-
-        let s = core::str::from_utf8(&buffer[..pos]).unwrap();
+        let len = self.format_to_buffer(&mut buffer);
+        let s = unsafe { core::str::from_utf8_unchecked(&buffer[..len]) };
         f.write_str(s)
+    }
+}
+
+// ============================================================================
+// Reciprocal Constants for Fast Division
+// ============================================================================
+
+/// Fast division by 100 using reciprocal multiplication
+/// We use a 73-bit reciprocal: floor(2^73 / 100) = 94367431584242442199
+#[inline(always)]
+const fn div100_u128(n: u128) -> u128 {
+    const RECIP: u128 = 94367431584242442199;
+    const SHIFT: u32 = 73;
+
+    let prod = n.wrapping_mul(RECIP);
+    prod >> SHIFT
+}
+
+/// Format fractional part with exact fixed width (always write exactly `width` digits)
+#[inline]
+fn format_fractional_fixed_width(mut frac: u128, width: usize, buffer: &mut [u8]) -> usize {
+    // Write digits from right to left into temp buffer
+    let mut temp = [0u8; 20];
+
+    for i in 0..width {
+        temp[width - 1 - i] = b'0' + (frac % 10) as u8;
+        frac /= 10;
+    }
+
+    // Copy to output buffer
+    for i in 0..width {
+        buffer[i] = temp[i];
+    }
+
+    width
+}
+
+// ============================================================================
+// Formatting Functions Using Reciprocal Multiplication
+// ============================================================================
+
+/// Format u128 using reciprocal multiplication
+#[inline]
+fn format_u128_reciprocal(mut n: u128, buffer: &mut [u8]) -> usize {
+    let mut temp = [0u8; 40]; // Max 39 digits for u128
+    let mut len = 0;
+
+    // Process pairs of digits using reciprocal division
+    while n >= 100 {
+        let q = div100_u128(n);
+        let r = (n - q * 100) as u8;
+
+        // Write two digits
+        temp[len] = b'0' + (r % 10);
+        temp[len + 1] = b'0' + (r / 10);
+        len += 2;
+
+        n = q;
+    }
+
+    // Last 1-2 digits
+    if n >= 10 {
+        let r = n as u8;
+        temp[len] = b'0' + (r % 10);
+        temp[len + 1] = b'0' + (r / 10);
+        len += 2;
+    } else if n > 0 {
+        temp[len] = b'0' + n as u8;
+        len += 1;
+    }
+
+    // Reverse into output buffer
+    for i in 0..len {
+        buffer[i] = temp[len - 1 - i];
+    }
+
+    len
+}
+
+/// Format fractional part with trailing zero removal
+#[inline]
+fn format_fractional_reciprocal(frac: u128, buffer: &mut [u8]) -> usize {
+    // Convert to 12-digit string with leading zeros, then strip trailing zeros
+    let mut digits = [0u8; 12];
+    let mut temp = frac;
+
+    // Extract all 12 digits
+    for i in (0..12).rev() {
+        digits[i] = (temp % 10) as u8;
+        temp /= 10;
+    }
+
+    // Find last non-zero digit
+    let mut last_nonzero = 0;
+    for i in 0..12 {
+        if digits[i] != 0 {
+            last_nonzero = i;
+        }
+    }
+
+    // Write digits up to last non-zero
+    for i in 0..=last_nonzero {
+        buffer[i] = b'0' + digits[i];
+    }
+
+    last_nonzero + 1
+}
+
+/// Compute 10^n at compile time (for u128)
+#[inline(always)]
+const fn const_pow10_u128(n: u8) -> u128 {
+    match n {
+        0 => 1,
+        1 => 10,
+        2 => 100,
+        3 => 1_000,
+        4 => 10_000,
+        5 => 100_000,
+        6 => 1_000_000,
+        7 => 10_000_000,
+        8 => 100_000_000,
+        9 => 1_000_000_000,
+        10 => 10_000_000_000,
+        11 => 100_000_000_000,
+        12 => 1_000_000_000_000,
+        _ => panic!("pow10: exponent too large"),
     }
 }
 
@@ -2251,11 +2424,51 @@ impl<'de> Deserialize<'de> for D96 {
     {
         if deserializer.is_human_readable() {
             // JSON, TOML, etc. - parse from string
-            let s = alloc::string::String::deserialize(deserializer)?;
-            Self::from_str(&s).map_err(de::Error::custom)
+            // Use visitor pattern to avoid allocation
+            struct D96Visitor;
+
+            impl<'de> de::Visitor<'de> for D96Visitor {
+                type Value = D96;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("a decimal number string")
+                }
+
+                fn visit_str<E>(self, v: &str) -> core::result::Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    D96::from_str_exact(v).map_err(de::Error::custom)
+                }
+
+                fn visit_borrowed_str<E>(self, v: &'de str) -> core::result::Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    D96::from_str_exact(v).map_err(de::Error::custom)
+                }
+
+                fn visit_string<E>(
+                    self,
+                    v: alloc::string::String,
+                ) -> core::result::Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    D96::from_str_exact(&v).map_err(de::Error::custom)
+                }
+            }
+
+            deserializer.deserialize_str(D96Visitor)
         } else {
             // Bincode, MessagePack, etc. - deserialize raw i128
             let value = i128::deserialize(deserializer)?;
+
+            // CRITICAL: Validate 96-bit bounds
+            if value > Self::MAX.value || value < Self::MIN.value {
+                return Err(de::Error::custom("value exceeds D96 96-bit range"));
+            }
+
             Ok(Self { value })
         }
     }
@@ -3628,7 +3841,7 @@ mod display_tests {
     #[test]
     fn test_display_zero() {
         assert_eq!(format!("{}", D96::ZERO), "0");
-        assert_eq!(format!("{:.2}", D96::ZERO), "0");
+        assert_eq!(format!("{:.2}", D96::ZERO), "0.00");
     }
 
     #[test]

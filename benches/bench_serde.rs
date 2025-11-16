@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use fixdec::D64;
+use fixdec::{D64, D96};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::{hint::black_box, str::FromStr};
@@ -28,6 +28,30 @@ fn bench_d64_roundtrip_json(c: &mut Criterion) {
         b.iter(|| {
             let json = serde_json::to_string(&black_box(d)).unwrap();
             black_box(serde_json::from_str::<D64>(&json).unwrap())
+        });
+    });
+}
+
+fn bench_d96_serialize_json(c: &mut Criterion) {
+    c.bench_function("d96_serialize_json", |b| {
+        let d = D96::from_str("123.456789").unwrap();
+        b.iter(|| black_box(serde_json::to_string(&black_box(d)).unwrap()));
+    });
+}
+
+fn bench_d96_deserialize_json(c: &mut Criterion) {
+    c.bench_function("d96_deserialize_json", |b| {
+        let json = r#""123.456789""#;
+        b.iter(|| black_box(serde_json::from_str::<D96>(black_box(json)).unwrap()));
+    });
+}
+
+fn bench_d96_roundtrip_json(c: &mut Criterion) {
+    c.bench_function("d96_roundtrip_json", |b| {
+        let d = D96::from_str("123.456789").unwrap();
+        b.iter(|| {
+            let json = serde_json::to_string(&black_box(d)).unwrap();
+            black_box(serde_json::from_str::<D96>(&json).unwrap())
         });
     });
 }
