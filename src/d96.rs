@@ -181,13 +181,31 @@ impl Default for D96 {
 }
 
 impl D96 {
+    /// The maximum valid 96-bit value
+    const MAX_96BIT: i128 = 39_614_081_257_132_168_796_771_975_167;
+    const MIN_96BIT: i128 = -39_614_081_257_132_168_796_771_975_168;
+
     /// Creates a new D96 from a raw scaled value.
     ///
-    /// # Safety
-    /// The caller must ensure the value is properly scaled by 10^12.
+    /// # Panics
+    /// Panics in debug mode if value exceeds 96-bit range
     #[inline(always)]
     pub const fn from_raw(value: i128) -> Self {
+        assert!(
+            value <= Self::MAX_96BIT && value >= Self::MIN_96BIT,
+            "D96::from_raw: value exceeds 96-bit range"
+        );
         Self { value }
+    }
+
+    /// Creates a new D96 from a raw scaled value, checking bounds.
+    #[inline(always)]
+    pub const fn from_raw_checked(value: i128) -> Option<Self> {
+        if value > Self::MAX_96BIT || value < Self::MIN_96BIT {
+            None
+        } else {
+            Some(Self { value })
+        }
     }
 
     /// Returns the raw internal value (scaled by 10^12).
@@ -371,10 +389,9 @@ impl D96 {
 // ============================================================================
 
 impl D96 {
-    /// Optimized 96-bit multiplication
+    /// Optimized multiplication for 96-bit values
     ///
-    /// Takes advantage of the fact that 96×96=192 bits, which fits
-    /// comfortably in 256-bit intermediate arithmetic
+    /// Since we guarantee 96-bit inputs, we can use optimized 192-bit arithmetic
     #[inline(always)]
     pub fn checked_mul(self, rhs: Self) -> Option<Self> {
         // Early exit for zero
@@ -387,13 +404,39 @@ impl D96 {
         let a = self.value.unsigned_abs();
         let b = rhs.value.unsigned_abs();
 
-        // Multiply to get 256-bit result
-        let (prod_low, prod_high) = mul_128x128_to_256(a, b);
+        // If product fits in 128 bits, we can use fast division
+        // sqrt(2^128 / 1) ≈ 2^64 ≈ 18 quintillion raw
+        // But we need: (a * b) / 10^12 to fit
+        // So: a * b < 2^128
+        // Safe threshold: both values < 2^64 (then product < 2^128)
+        const FAST_THRESHOLD: u128 = 1u128 << 64; // 2^64
 
-        // Divide by 10^12 using optimized division
-        let quotient = div_256_by_1e12(prod_low, prod_high)?;
+        if a < FAST_THRESHOLD && b < FAST_THRESHOLD {
+            // Simple 128-bit multiplication and division
+            let product = a * b;
+            let quotient = product / (Self::SCALE as u128);
 
-        // Check if result fits in 96-bit range
+            if quotient > Self::MAX.value as u128 {
+                return None;
+            }
+
+            let result = if result_negative {
+                -(quotient as i128)
+            } else {
+                quotient as i128
+            };
+
+            if result > Self::MAX.value || result < Self::MIN.value {
+                return None;
+            }
+
+            return Some(Self { value: result });
+        }
+
+        // SLOW PATH: Use 192-bit arithmetic for larger values
+        let (prod_low, prod_high) = mul_96x96_to_192(a, b);
+        let quotient = div_192_by_1e12(prod_low, prod_high)?;
+
         if quotient > Self::MAX.value as u128 {
             return None;
         }
@@ -404,7 +447,6 @@ impl D96 {
             quotient as i128
         };
 
-        // Final bounds check
         if result > Self::MAX.value || result < Self::MIN.value {
             return None;
         }
@@ -438,10 +480,11 @@ impl D96 {
         let a = self.value.unsigned_abs();
         let b = rhs.value.unsigned_abs();
 
-        let (prod_low, prod_high) = mul_128x128_to_256(a, b);
+        // Use optimized 96×96 → 192-bit multiplication
+        let (prod_low, prod_high) = mul_96x96_to_192(a, b);
 
         // For wrapping, we don't care about overflow
-        let quotient = div_256_by_1e12_wrapping(prod_low, prod_high);
+        let quotient = div_192_by_1e12_wrapping(prod_low, prod_high);
 
         let result = if result_negative {
             (quotient as i128).wrapping_neg()
@@ -480,13 +523,17 @@ impl D96 {
             return Some(add);
         }
 
-        // Compute self * mul first
+        // Compute self * mul first using 96-bit optimized path
         let mul_negative = (self.value < 0) != (mul.value < 0);
         let a = self.value.unsigned_abs();
         let b = mul.value.unsigned_abs();
 
-        let (prod_low, prod_high) = mul_128x128_to_256(a, b);
-        let quotient = div_256_by_1e12(prod_low, prod_high)?;
+        // Use optimized 96×96 → 192-bit multiplication
+        debug_assert!(a <= Self::MAX.value as u128);
+        debug_assert!(b <= Self::MAX.value as u128);
+
+        let (prod_low, prod_high) = mul_96x96_to_192(a, b);
+        let quotient = div_192_by_1e12(prod_low, prod_high)?;
 
         if quotient > Self::MAX.value as u128 {
             return None;
@@ -529,38 +576,46 @@ impl D96 {
     }
 }
 
-/// Multiply two u128 values to produce a 256-bit result
+/// Optimized 96×96 multiplication
+/// Since inputs are ≤ 96 bits, we can use simpler arithmetic
 #[inline(always)]
-const fn mul_128x128_to_256(a: u128, b: u128) -> (u128, u128) {
-    let a_lo = a as u64 as u128;
-    let a_hi = (a >> 64) as u128;
-    let b_lo = b as u64 as u128;
-    let b_hi = (b >> 64) as u128;
+const fn mul_96x96_to_192(a: u128, b: u128) -> (u128, u64) {
+    // Split into 64-bit parts
+    let a_lo = a as u64;
+    let a_hi = (a >> 64) as u64;
+    let b_lo = b as u64;
+    let b_hi = (b >> 64) as u64;
 
-    let p0 = a_lo * b_lo;
-    let p1 = a_lo * b_hi;
-    let p2 = a_hi * b_lo;
-    let p3 = a_hi * b_hi;
+    // Do the multiplications
+    let p0 = a_lo as u128 * b_lo as u128;
+    let p1 = a_lo as u128 * b_hi as u128;
+    let p2 = a_hi as u128 * b_lo as u128;
+    let p3 = (a_hi as u128) * (b_hi as u128);
 
-    let (low, carry1) = p0.overflowing_add(p1 << 64);
-    let (low, carry2) = low.overflowing_add(p2 << 64);
+    // Combine - optimized for the case where high parts are small
+    let mid = p1 + p2;
+    let (low, carry) = p0.overflowing_add(mid << 64);
+    let high = p3 + (mid >> 64) + (carry as u128);
 
-    let high = p3 + (p1 >> 64) + (p2 >> 64) + (carry1 as u128) + (carry2 as u128);
-
-    (low, high)
+    (low, high as u64)
 }
 
-/// Optimized 256-bit division by 10^12
+/// Optimized division of 192-bit by 10^12
 #[inline(always)]
-const fn div_256_by_1e12(low: u128, high: u128) -> Option<u128> {
+const fn div_192_by_1e12(low: u128, high: u64) -> Option<u128> {
     const DIVISOR: u128 = 1_000_000_000_000;
 
-    if high >= DIVISOR {
+    if high as u128 >= DIVISOR {
         return None;
     }
 
-    let q_high = high / DIVISOR;
-    let r_high = high % DIVISOR;
+    // Optimize for the common case where high is 0
+    if high == 0 {
+        return Some(low / DIVISOR);
+    }
+
+    // Full division path
+    let r_high = high as u128;
 
     let low_hi = low >> 64;
     let low_lo = low & 0xFFFF_FFFF_FFFF_FFFF;
@@ -572,19 +627,15 @@ const fn div_256_by_1e12(low: u128, high: u128) -> Option<u128> {
     let dividend_low = (r_mid << 64) | low_lo;
     let q_low = dividend_low / DIVISOR;
 
-    if q_high > 0 {
-        return None;
-    }
-
     Some((q_mid << 64) | q_low)
 }
 
-/// Wrapping version of 256-bit division by 10^12
+/// Wrapping version of 192-bit division by 10^12
 #[inline(always)]
-const fn div_256_by_1e12_wrapping(low: u128, high: u128) -> u128 {
+const fn div_192_by_1e12_wrapping(low: u128, high: u64) -> u128 {
     const DIVISOR: u128 = 1_000_000_000_000;
 
-    let r_high = high % DIVISOR;
+    let r_high = (high as u128) % DIVISOR;
 
     let low_hi = low >> 64;
     let low_lo = low & 0xFFFF_FFFF_FFFF_FFFF;
@@ -605,19 +656,12 @@ const fn div_256_by_1e12_wrapping(low: u128, high: u128) -> u128 {
 
 impl D96 {
     /// Checked division. Returns `None` if `rhs` is zero or overflow occurred.
-    ///
-    /// With 96-bit values, we can use simpler 192-bit intermediate arithmetic.
     #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
     pub fn checked_div(self, rhs: Self) -> Option<Self> {
         if rhs.value == 0 {
             return None;
         }
-
-        // For 96-bit division, we multiply by scale first
-        // self * SCALE / rhs
-        // Since self is 96-bit and SCALE is ~40-bit (10^12), product is ~136-bit
-        // This fits comfortably in 192 bits
 
         let self_negative = self.value < 0;
         let rhs_negative = rhs.value < 0;
@@ -627,13 +671,13 @@ impl D96 {
         let b = rhs.value.unsigned_abs();
         let scale = Self::SCALE as u128;
 
-        // Multiply a by scale to get 192-bit result
-        let (prod_low, prod_high) = mul_u128_by_u128(a, scale);
+        // Multiply a (≤96 bits) by scale (≈40 bits) = ≤136 bits
+        let (prod_low, prod_high) = mul_u128_by_small(a, scale);
 
         // Divide 192-bit number by b
         let quotient = div_192_by_u128(prod_low, prod_high, b)?;
 
-        // Check if result fits in 96-bit range
+        // Check 96-bit bounds
         if quotient > Self::MAX.value as u128 {
             return None;
         }
@@ -650,6 +694,34 @@ impl D96 {
         }
 
         Some(Self { value: result })
+    }
+
+    /// Wrapping division. Wraps on overflow. Returns zero if `rhs` is zero.
+    #[inline(always)]
+    #[must_use = "this returns the result of the operation, without modifying the original"]
+    pub fn wrapping_div(self, rhs: Self) -> Self {
+        if rhs.value == 0 {
+            return Self::ZERO;
+        }
+
+        let self_negative = self.value < 0;
+        let rhs_negative = rhs.value < 0;
+        let result_negative = self_negative != rhs_negative;
+
+        let a = self.value.unsigned_abs();
+        let b = rhs.value.unsigned_abs();
+        let scale = Self::SCALE as u128;
+
+        let (prod_low, prod_high) = mul_u128_by_small(a, scale);
+        let quotient = div_192_by_u128_wrapping(prod_low, prod_high, b);
+
+        let result = if result_negative {
+            (quotient as i128).wrapping_neg()
+        } else {
+            quotient as i128
+        };
+
+        Self { value: result }
     }
 
     /// Saturating division. Clamps on overflow. Returns zero if `rhs` is zero.
@@ -670,34 +742,6 @@ impl D96 {
         }
     }
 
-    /// Wrapping division. Wraps on overflow. Returns zero if `rhs` is zero.
-    #[inline(always)]
-    #[must_use = "this returns the result of the operation, without modifying the original"]
-    pub fn wrapping_div(self, rhs: Self) -> Self {
-        if rhs.value == 0 {
-            return Self::ZERO;
-        }
-
-        let self_negative = self.value < 0;
-        let rhs_negative = rhs.value < 0;
-        let result_negative = self_negative != rhs_negative;
-
-        let a = self.value.unsigned_abs();
-        let b = rhs.value.unsigned_abs();
-        let scale = Self::SCALE as u128;
-
-        let (prod_low, prod_high) = mul_u128_by_u128(a, scale);
-        let quotient = div_192_by_u128_wrapping(prod_low, prod_high, b);
-
-        let result = if result_negative {
-            (quotient as i128).wrapping_neg()
-        } else {
-            quotient as i128
-        };
-
-        Self { value: result }
-    }
-
     /// Checked division. Returns an error if `rhs` is zero or overflow occurred.
     #[inline(always)]
     #[must_use = "this returns the result of the operation, without modifying the original"]
@@ -712,10 +756,25 @@ impl D96 {
     }
 }
 
-/// Multiply two u128 values (reusing existing function)
+/// Multiply a u128 by a small constant (like 10^12)
+/// Returns (low 128 bits, high 128 bits) but high will be small
 #[inline(always)]
-const fn mul_u128_by_u128(a: u128, b: u128) -> (u128, u128) {
-    mul_128x128_to_256(a, b)
+const fn mul_u128_by_small(a: u128, b: u128) -> (u128, u128) {
+    // For our use case: a ≤ 96 bits, b = 10^12 ≈ 2^40
+    // Product ≤ 2^136, so high part will be at most 2^8 (very small)
+
+    let a_lo = a as u64 as u128;
+    let a_hi = (a >> 64) as u128;
+
+    // Multiply both parts by b
+    let p0 = a_lo * b;
+    let p1 = a_hi * b;
+
+    // Combine
+    let (low, carry) = p0.overflowing_add(p1 << 64);
+    let high = (p1 >> 64) + (carry as u128);
+
+    (low, high)
 }
 
 /// Divide a 192-bit number by a u128 divisor
@@ -2497,11 +2556,19 @@ mod conversion_tests {
         let d = D96::from_raw(42_000_000_000_000); // 42.0
         assert_eq!(d.to_i64(), Some(42));
 
-        // Value too large for i64 - use a value that fits in D96 but not i64
-        // i64::MAX = 9,223,372,036,854,775,807
-        // We need a value > i64::MAX that still fits in D96's range
-        let large = D96::from_raw((i64::MAX as i128 + 1) * D96::SCALE);
-        assert_eq!(large.to_i64(), None);
+        // D96's maximum integer part is ~39 trillion
+        // This always fits in i64 (which can hold up to ~9 quintillion)
+        // So to_i64() should always succeed for valid D96 values
+        let large = D96::from_str_exact("39614081257132").unwrap(); // ~39.6 trillion
+        assert_eq!(large.to_i64(), Some(39614081257132));
+
+        // Test D96::MAX converts successfully
+        let max_as_i64 = D96::MAX.to_i64();
+        assert!(max_as_i64.is_some());
+
+        // Test negative
+        let neg = D96::from_str_exact("-100000").unwrap();
+        assert_eq!(neg.to_i64(), Some(-100000));
     }
 
     #[test]
