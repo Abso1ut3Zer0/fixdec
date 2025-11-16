@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ethnum = "1.5.2"
 serde = { version = "1.0.228", optional = true }
 thiserror = "2.0.17"
 
