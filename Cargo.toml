@@ -34,7 +34,7 @@ name = "bench_d64"
 harness = false
 
 [[bench]]
-name = "bench_d128"
+name = "bench_d96"
 harness = false
 
 [[bench]]

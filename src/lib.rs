@@ -13,11 +13,11 @@ extern crate std;
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-mod d128;
+mod d96;
 mod d64;
 
 pub use d64::D64;
-pub use d128::D128;
+pub use d96::D96;
 
 use thiserror::Error;
 
