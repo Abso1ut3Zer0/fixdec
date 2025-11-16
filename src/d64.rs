@@ -1,3 +1,4 @@
+use core::fmt;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 use core::str::FromStr;
 
@@ -7,7 +8,7 @@ use crate::DecimalError;
 ///
 /// Range: ±92,233,720,368.54775807
 /// Precision: 0.00000001
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct D64 {
     value: i64,
@@ -51,15 +52,92 @@ impl D64 {
         value: 1000 * Self::SCALE,
     };
 
-    /// One cent (0.01) - useful for USD and similar currencies
+    // ===== Currency Fractions =====
+
+    /// One cent (0.01) - USD, EUR, and most currency smallest unit
     pub const CENT: Self = Self {
         value: Self::SCALE / 100,
     };
 
-    /// One basis point (0.0001) - common in finance for interest rates
+    /// One mil (0.001) - used in some pricing contexts
+    pub const MIL: Self = Self {
+        value: Self::SCALE / 1000,
+    };
+
+    // ===== Basis Points =====
+
+    /// One basis point (0.0001) - 1 bps, common in interest rates
     pub const BASIS_POINT: Self = Self {
         value: Self::SCALE / 10_000,
     };
+
+    /// One half basis point (0.00005)
+    pub const HALF_BASIS_POINT: Self = Self {
+        value: Self::SCALE / 20_000,
+    };
+
+    /// One quarter basis point (0.000025)
+    pub const QUARTER_BASIS_POINT: Self = Self {
+        value: Self::SCALE / 40_000,
+    };
+
+    // ===== Bond Price Fractions (32nds and 64ths) =====
+
+    /// One thirty-second (1/32 = 0.03125) - US Treasury bond price tick
+    pub const THIRTY_SECOND: Self = Self {
+        value: Self::SCALE / 32,
+    };
+
+    /// One sixty-fourth (1/64 = 0.015625) - US Treasury bond price tick
+    pub const SIXTY_FOURTH: Self = Self {
+        value: Self::SCALE / 64,
+    };
+
+    /// One half of a thirty-second (1/64) - alternative name
+    pub const HALF_THIRTY_SECOND: Self = Self::SIXTY_FOURTH;
+
+    /// One quarter of a thirty-second (1/128 = 0.0078125)
+    pub const QUARTER_THIRTY_SECOND: Self = Self {
+        value: Self::SCALE / 128,
+    };
+
+    /// One eighth of a thirty-second (1/256 = 0.00390625)
+    pub const EIGHTH_THIRTY_SECOND: Self = Self {
+        value: Self::SCALE / 256,
+    };
+
+    // ===== Equity Price Fractions =====
+
+    /// One eighth (0.125) - legacy stock pricing increment
+    pub const EIGHTH: Self = Self {
+        value: Self::SCALE / 8,
+    };
+
+    /// One sixteenth (0.0625) - legacy stock pricing increment
+    pub const SIXTEENTH: Self = Self {
+        value: Self::SCALE / 16,
+    };
+
+    /// One quarter (0.25)
+    pub const QUARTER: Self = Self {
+        value: Self::SCALE / 4,
+    };
+
+    /// One half (0.5)
+    pub const HALF: Self = Self {
+        value: Self::SCALE / 2,
+    };
+
+    // ===== Percentage Helpers =====
+
+    /// One percent (0.01) - same as CENT but semantic clarity
+    pub const PERCENT: Self = Self::CENT;
+
+    /// Ten basis points (0.001) - same as MIL
+    pub const TEN_BPS: Self = Self::MIL;
+
+    /// One hundred basis points (0.01) - same as PERCENT
+    pub const HUNDRED_BPS: Self = Self::PERCENT;
 }
 
 // ============================================================================
@@ -1256,6 +1334,70 @@ impl From<u8> for D64 {
     }
 }
 
+impl fmt::Display for D64 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let is_negative = self.value < 0;
+        let abs_value = self.value.unsigned_abs();
+
+        let integer_part = abs_value / Self::SCALE as u64;
+        let fractional_part = abs_value % Self::SCALE as u64;
+
+        if is_negative {
+            f.write_str("-")?;
+        }
+
+        write!(f, "{}", integer_part)?;
+
+        // Handle precision specifier
+        if let Some(precision) = f.precision() {
+            if precision > 0 && fractional_part > 0 {
+                // Only show decimal if non-zero
+                f.write_str(".")?;
+
+                let precision = precision.min(Self::DECIMALS as usize);
+                let scale_reduction = Self::DECIMALS as usize - precision;
+                let divisor = 10u64.pow(scale_reduction as u32);
+                let rounded_frac = (fractional_part + divisor / 2) / divisor;
+
+                write!(f, "{:0width$}", rounded_frac, width = precision)?;
+            }
+        } else {
+            // Default: strip trailing zeros
+            if fractional_part > 0 {
+                f.write_str(".")?;
+
+                // Write fractional part, then strip trailing zeros
+                let mut buf = [0u8; 8];
+                format_u64_padded(fractional_part, &mut buf);
+
+                // Find last non-zero digit
+                let mut end = 8;
+                while end > 0 && buf[end - 1] == b'0' {
+                    end -= 1;
+                }
+
+                // Safety: buf contains only ASCII digits
+                let s = unsafe { core::str::from_utf8_unchecked(&buf[..end]) };
+                f.write_str(s)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl fmt::Debug for D64 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            // {:#?} shows raw internals
+            f.debug_struct("D64").field("value", &self.value).finish()
+        } else {
+            // {:?} shows formatted decimal
+            write!(f, "D64({})", self)
+        }
+    }
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -1304,6 +1446,15 @@ const fn isqrt(n: u64) -> u64 {
     }
 
     right
+}
+
+/// Format a u64 with leading zeros into a fixed-size buffer
+#[inline]
+fn format_u64_padded(mut n: u64, buf: &mut [u8; 8]) {
+    for i in (0..8).rev() {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
 }
 
 #[cfg(test)]
@@ -1930,3 +2081,61 @@ mod string_tests {
         assert!(D64::from_str("123-").is_err());
     }
 }
+
+#[cfg(test)]
+mod display_tests {
+    use std::format;
+
+    use super::*;
+
+    #[test]
+    fn test_display_integer() {
+        assert_eq!(format!("{}", D64::from_raw(100_000_000)), "1");
+        assert_eq!(format!("{}", D64::from_raw(4200_000_000)), "42");
+        assert_eq!(format!("{}", D64::ZERO), "0");
+    }
+
+    #[test]
+    fn test_display_decimal() {
+        assert_eq!(format!("{}", D64::from_raw(123_450_000)), "1.2345");
+        assert_eq!(format!("{}", D64::from_raw(100_000_001)), "1.00000001");
+    }
+
+    #[test]
+    fn test_display_negative() {
+        assert_eq!(format!("{}", D64::from_raw(-100_000_000)), "-1");
+        assert_eq!(format!("{}", D64::from_raw(-123_450_000)), "-1.2345");
+    }
+
+    #[test]
+    fn test_display_trailing_zeros_stripped() {
+        assert_eq!(format!("{}", D64::from_raw(123_000_000)), "1.23");
+        assert_eq!(format!("{}", D64::from_raw(100_100_000)), "1.001");
+    }
+
+    #[test]
+    fn test_display_precision() {
+        let d = D64::from_raw(123_456_789); // 1.23456789
+
+        assert_eq!(format!("{:.0}", d), "1");
+        assert_eq!(format!("{:.2}", d), "1.23");
+        assert_eq!(format!("{:.4}", d), "1.2346"); // Rounds
+        assert_eq!(format!("{:.8}", d), "1.23456789");
+    }
+
+    #[test]
+    fn test_display_precision_rounding() {
+        let d = D64::from_raw(125_500_000); // 1.255
+        assert_eq!(format!("{:.2}", d), "1.26"); // Rounds up
+
+        let d = D64::from_raw(125_400_000); // 1.254
+        assert_eq!(format!("{:.2}", d), "1.25"); // Rounds down
+    }
+
+    #[test]
+    fn test_display_zero() {
+        assert_eq!(format!("{}", D64::ZERO), "0");
+        assert_eq!(format!("{:.2}", D64::ZERO), "0");
+    }
+}
+

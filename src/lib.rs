@@ -5,6 +5,13 @@
 //! - `D128`: 128-bit with 18 decimal places (±170 trillion range)
 
 #![no_std]
+#![cfg_attr(test, allow(unused_imports))]
+
+#[cfg(test)]
+extern crate std;
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 mod d128;
 mod d64;
